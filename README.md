@@ -1,6 +1,14 @@
+## documetação do uso de IA / relatorio:
+- link do uso de IA: https://docs.google.com/document/d/1sqhnJL_X32p5hlbgSm2kyc2LuHvbaiGpdfhAUgdukyc/edit?usp=sharing
+- link do relatorio:
+
+
+
 ## etapa 1
 
 ## definição do modelo de comportamento de trasmissão e recepção de pacotes e seu gerenciamento
+
+-vamos usar o GBN por questão de gerenciamente 
 
 | Aspecto | Go-Back-N (GBN) | Repetição Seletiva (SR) |
 | :--- | :--- | :--- |
