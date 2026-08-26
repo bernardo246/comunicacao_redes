@@ -25,6 +25,7 @@ MAX_PAYLOAD = 4
 MIN_TEXTO = 30            # limite minimo exigido pelo enunciado
 MAX_TEXTO_DEFAULT = 30    # valor default proposto pelo cliente
 
+# quantidade de pacotes que foram enviados por lote
 JANELA_MIN = 1
 JANELA_MAX = 5
 JANELA_INICIAL = 5        # valor inicial determinado pelo servidor
