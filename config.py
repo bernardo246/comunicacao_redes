@@ -15,6 +15,7 @@ ENCODING = "utf-8"
 VERSAO_PROTOCOLO = 1
 DELIM_CAMPO = "|"         #
 DELIM_QUADRO = "\n"       # delimitador de quadro sobre o fluxo de bytes do TCP
+DELIM_PAYLOAD =","
 
 # Carga util maxima de um pacote de DADOS (exigencia do enunciado).
 # Mensagens de controle (handshake) nao carregam texto do usuario e por isso

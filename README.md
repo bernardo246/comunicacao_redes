@@ -18,3 +18,12 @@
 | **Retransmissão** | Retransmite o pacote perdido **e todos os subsequentes** da janela. | Retransmite **apenas o pacote específico** que falhou ou expirou. |
 | **Complexidade** | Mais simples de implementar no código. | Mais complexo (exige gestão de múltiplos timers e alocação de buffer). |
 | **Uso da Banda** | Menos eficiente em canais com alta taxa de perdas (desperdício de tráfego). | Mais eficiente em canais com perdas (envia apenas o que é estritamente necessário). |
+
+# variaveis para pacote
+- tipo — O que o pacote é (HS, HSACK, DATA, ACK, NACK).
+
+- seq — Qual número de sequência do pacote (pra ordenar e evitar duplicatas).
+
+- checksum — Valor que detecta corrupção (placeholder no checkpoint 1, real no checkpoint 3).
+
+- payload — O conteúdo/dado útil (parâmetros da sessão no handshake, dados reais no checkpoint 2).
