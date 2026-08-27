@@ -5,7 +5,7 @@
 # 5. ENCERRAR   → fechar o socket quando terminar
 import config
 import socket
-
+import protocol
 
 def iniciar_servidor(host, porta):
     servidor = socket.socket(socket.AF_INET, socket.SOCK_DGRAM) # criando socket e definindo que é udp
@@ -19,3 +19,6 @@ def receber_dados(servidor):
     pacote = dados.decode(config.ENCODING) # decodifica de bytes para string
     return endereco_cliente,pacote
 
+def processar_pacotes(pacote_str):   # recebe o recv e chama a função parsear do protocol
+    dados = protocol.parsear_handshake(pacote_str)
+    return dados
