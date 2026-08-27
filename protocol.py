@@ -46,6 +46,7 @@ def parsear_handshake(bruto):
         "algoritmo": campos[1],
         "tamanho_max_texto": int(campos[2]),
     }
+    
     if pacote["tipo"] == TYPE_HANDSHAKE_ACK:
         resultado["tamanho_janela"] = int(campos[3])
     return resultado
