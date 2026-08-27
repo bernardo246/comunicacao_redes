@@ -1,6 +1,6 @@
 ## documetação do uso de IA / relatorio:
 - link do uso de IA: https://docs.google.com/document/d/1sqhnJL_X32p5hlbgSm2kyc2LuHvbaiGpdfhAUgdukyc/edit?usp=sharing
-- link do relatorio:
+- link do relatorio: ainda tem que ser criado
 
 
 
