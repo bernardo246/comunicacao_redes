@@ -1,7 +1,7 @@
 # 1. PREPARAR   → criar o socket, configurar, abrir a porta 
 # 2. RECEBER    → ler o datagrama que o cliente envia 
 # 3. PROCESSAR  → interpretar esses dados usando o protocol.py
-# 4. RESPONDER  → montar e enviar a resposta (sendto, direto pro endereço do cliente)
+# 4. RESPONDER  → montar e enviar a resposta 
 # 5. ENCERRAR   → fechar o socket quando terminar
 import config
 import socket
@@ -22,3 +22,6 @@ def receber_dados(servidor):
 def processar_pacotes(pacote_str):   # recebe o recv e chama a função parsear do protocol
     dados = protocol.parsear_handshake(pacote_str)
     return dados
+
+#Decidir os valores, montar e enviar de volta via socket
+def responder_handshake(servidor,endereco_cliente,dados):
