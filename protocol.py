@@ -45,13 +45,13 @@ def calcular_checksum(algoritmo,payload):
 def montar_handshake_request(tamanho_max_texto): 
     """Cliente -> servidor: propõe modo, algoritmo e tamanho máximo do texto."""
     payload = DELIM_PAYLOAD.join([MODO_PADRAO, ALGO_PADRAO, str(tamanho_max_texto)])
-    checksum = calcular_checksum(payload) # mensagens de controle tambem precisam de checksum, mesmo que nao carreguem texto do usuario
+    checksum = calcular_checksum(ALGORITMO_CHECKSUM_PADRAO,payload) # mensagens de controle tambem precisam de checksum, mesmo que nao carreguem texto do usuario
     return montar_pacote(TYPE_HANDSHAKE_REQ, 0, checksum, payload)
 
 def montar_handshake_ack(tamanho_max_texto, tamanho_janela):
     """Servidor -> cliente: confirma os parâmetros e informa o tamanho da janela."""
     payload = DELIM_PAYLOAD.join([MODO_PADRAO, ALGO_PADRAO, str(tamanho_max_texto), str(tamanho_janela)])
-    checksum = calcular_checksum(payload)
+    checksum = calcular_checksum(ALGORITMO_CHECKSUM_PADRAO,payload)
     return montar_pacote(TYPE_HANDSHAKE_ACK, 0, checksum, payload)
 
 def parsear_handshake(bruto):
@@ -69,3 +69,24 @@ def parsear_handshake(bruto):
     if pacote["tipo"] == TYPE_HANDSHAKE_ACK:
         resultado["tamanho_janela"] = int(campos[3])
     return resultado
+
+
+# para testar
+if __name__ =="__main__":
+    pedido=montar_handshake_request(50)
+    print("Pacote enviado pelo cliente:", pedido)
+    print("Parseado pelo servidor:", parsear_handshake(pedido))
+
+    resposta=montar_handshake_ack(50,5)
+    print("\nPacote enviado pelo servidor:", resposta)
+    print("Parseado pelo cliente:", parsear_handshake(resposta))
+    print("\n")
+    desembrulhar_pedido=parsear_handshake(pedido)
+    if isinstance(desembrulhar_pedido, dict):
+        for chave, valor in desembrulhar_pedido.items():
+            print(f"{chave}: {valor}")
+    print("\n")
+    desembrulhar_resposta=parsear_handshake(resposta)
+    if isinstance(desembrulhar_resposta, dict):
+        for chave, valor in desembrulhar_resposta.items():
+            print(f"{chave}: {valor}")
