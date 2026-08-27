@@ -1,7 +1,8 @@
 ## documetação do uso de IA / relatorio:
 <a href="https://docs.google.com/document/d/1sqhnJL_X32p5hlbgSm2kyc2LuHvbaiGpdfhAUgdukyc/edit?usp=sharing">
-      <img src="https://img.shields.io/badge/Histórias-blue?style=for-the-badge&logo=google-docs&logoColor=white" />
+      <img src="https://img.shields.io/badge/Relatorio_Uso_IA-blue?style=for-the-badge&logo=google-docs&logoColor=white" />
 </a>
+
 - link do relatorio: ainda tem que ser criado
 
 
