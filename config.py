@@ -13,8 +13,7 @@ ENCODING = "utf-8"
 
 # ---------------------------------------------------------------- protocolo
 VERSAO_PROTOCOLO = 1
-DELIM_CAMPO = "|"         #
-DELIM_QUADRO = "\n"       # delimitador de quadro sobre o fluxo de bytes do TCP
+DELIM_CAMPO = "|"         
 DELIM_PAYLOAD =","
 
 TYPE_HANDSHAKE_REQ = "HS"
@@ -35,4 +34,6 @@ JANELA_MIN = 1
 JANELA_MAX = 5
 JANELA_INICIAL = 5        # valor inicial determinado pelo servidor
 
-MODO = "GBN-LOTE"
+# configuracao do handshake: modo de operacao e algoritmo de codificacao
+MODO_PADRAO = "GBN-LOTE"
+ALGORITMO_CHECKSUM_PADRAO = "Ascii"  # é o algoritmo de que vai ser usado para o checksum
