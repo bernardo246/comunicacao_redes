@@ -35,4 +35,17 @@ def montar_handshake_ack(modo, algoritmo, tamanho_max_texto, tamanho_janela):
     payload = DELIM_PAYLOAD.join([modo, algoritmo, str(tamanho_max_texto), str(tamanho_janela)])
     return montar_pacote(TYPE_HANDSHAKE_ACK, 0, "0", payload)
 
-# aqui tem que fazer o parse do handshake 
+def parsear_handshake(bruto):
+    """Extrai os campos de uma mensagem de handshake (request ou ack)."""
+    pacote = parsear_pacote(bruto)
+    campos = pacote["payload"].split(DELIM_PAYLOAD)
+ 
+    resultado = {
+        "tipo": pacote["tipo"],
+        "modo": campos[0],
+        "algoritmo": campos[1],
+        "tamanho_max_texto": int(campos[2]),
+    }
+    if pacote["tipo"] == TYPE_HANDSHAKE_ACK:
+        resultado["tamanho_janela"] = int(campos[3])
+    return resultado
