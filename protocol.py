@@ -42,15 +42,15 @@ def calcular_checksum(algoritmo,payload):
 
 
 # Funções de handshake
-def montar_handshake_request(modo, algoritmo, tamanho_max_texto): 
+def montar_handshake_request(tamanho_max_texto): 
     """Cliente -> servidor: propõe modo, algoritmo e tamanho máximo do texto."""
-    payload = DELIM_PAYLOAD.join([modo, algoritmo, str(tamanho_max_texto)])
+    payload = DELIM_PAYLOAD.join([MODO_PADRAO, ALGO_PADRAO, str(tamanho_max_texto)])
     checksum = calcular_checksum(payload) # mensagens de controle tambem precisam de checksum, mesmo que nao carreguem texto do usuario
     return montar_pacote(TYPE_HANDSHAKE_REQ, 0, checksum, payload)
 
-def montar_handshake_ack(modo, algoritmo, tamanho_max_texto, tamanho_janela):
+def montar_handshake_ack(tamanho_max_texto, tamanho_janela):
     """Servidor -> cliente: confirma os parâmetros e informa o tamanho da janela."""
-    payload = DELIM_PAYLOAD.join([modo, algoritmo, str(tamanho_max_texto), str(tamanho_janela)])
+    payload = DELIM_PAYLOAD.join([MODO_PADRAO, ALGO_PADRAO, str(tamanho_max_texto), str(tamanho_janela)])
     checksum = calcular_checksum(payload)
     return montar_pacote(TYPE_HANDSHAKE_ACK, 0, checksum, payload)
 
