@@ -1,5 +1,5 @@
-# 1. PREPARAR   → criar o socket, configurar, abrir a porta (sem "listen"!)
-# 2. RECEBER    → ler o datagrama que o cliente envia (recvfrom, não accept+recv)
+# 1. PREPARAR   → criar o socket, configurar, abrir a porta 
+# 2. RECEBER    → ler o datagrama que o cliente envia 
 # 3. PROCESSAR  → interpretar esses dados usando o protocol.py
 # 4. RESPONDER  → montar e enviar a resposta (sendto, direto pro endereço do cliente)
 # 5. ENCERRAR   → fechar o socket quando terminar
@@ -13,3 +13,9 @@ def iniciar_servidor(host, porta):
 
     servidor.bind((host, porta)) # definindo a porta e o ip do server
     return servidor
+
+def receber_dados(servidor):
+    endereco_cliente, dados = servidor.recvfrom(config.TAM_RECV)  # Recebe os dados e o endereço, por ser UDP precisa guardar o endereço
+    pacote = dados.decode(config.ENCODING) # decodifica de bytes para string
+    return endereco_cliente,pacote
+
