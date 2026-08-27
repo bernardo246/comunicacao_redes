@@ -17,6 +17,10 @@ DELIM_CAMPO = "|"         #
 DELIM_QUADRO = "\n"       # delimitador de quadro sobre o fluxo de bytes do TCP
 DELIM_PAYLOAD =","
 
+TYPE_HANDSHAKE_REQ = "HS"
+TYPE_HANDSHAKE_ACK = "HSACK"
+
+
 # Carga util maxima de um pacote de DADOS (exigencia do enunciado).
 # Mensagens de controle (handshake) nao carregam texto do usuario e por isso
 # nao estao sujeitas a esse limite.
