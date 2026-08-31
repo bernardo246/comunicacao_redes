@@ -33,5 +33,5 @@ def responder_handshake(servidor,endereco_cliente,dados):
 
     servidor.sendto(ack_bytes, endereco_cliente)
 
-
-
+def encerrar_servidor(servidor):
+    servidor.close()
