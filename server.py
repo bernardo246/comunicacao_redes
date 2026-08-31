@@ -35,3 +35,20 @@ def responder_handshake(servidor,endereco_cliente,dados):
 
 def encerrar_servidor(servidor):
     servidor.close()
+
+def main():
+    servidor = iniciar_servidor(config.HOST,config.PORTA)
+
+    while True:
+        dados, endereco_cliente = receber_dados(servidor)
+        info = processar_pacotes(dados)
+
+        if info["tipo"] == config.TYPE_HANDSHAKE_REQ:
+            responder_handshake(servidor,endereco_cliente,info)
+        else:
+            print("Tipo não encontrado")
+
+
+if __name__ == "__main__":
+    main()
+
