@@ -23,5 +23,15 @@ def processar_pacotes(pacote_str):   # recebe o recv e chama a função parsear 
     dados = protocol.parsear_handshake(pacote_str)
     return dados
 
-#Decidir os valores, montar e enviar de volta via socket
+#montar o pacote de resposta
+#codificar a string do pacote para bits
+#enviar para o endereço para cliente
 def responder_handshake(servidor,endereco_cliente,dados):
+    ack = protocol.montar_handshake_ack(dados["modo"], dados["algoritimo"],dados["tamanho_max_texto"], config.JANELA_INICIAL)
+
+    ack_bytes = ack.encode(config.ENCODING)
+
+    servidor.sendto(ack_bytes, endereco_cliente)
+
+
+
