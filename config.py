@@ -35,6 +35,8 @@ JANELA_MAX = 5
 JANELA_INICIAL = 5        # valor inicial determinado pelo servidor
 
 # configuracao do handshake: modo de operacao e algoritmo de codificacao
-MODO_PADRAO = "LOTE"
-ALGO_PADRAO ="GNB"
+MODO_LOTE = "LOTE"
+GNB ="GNB"
+MODO_INDIVIDUAL="IND"
+SR="SR"
 ALGORITMO_CHECKSUM_PADRAO = "Ascii"  # é o algoritmo de que vai ser usado para o checksum

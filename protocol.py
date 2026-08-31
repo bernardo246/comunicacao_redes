@@ -42,15 +42,15 @@ def calcular_checksum(algoritmo,payload):
 
 
 # Funções de handshake
-def montar_handshake_request(tamanho_max_texto): 
+def montar_handshake_request(modo,algoritimo,tamanho_max_texto): 
     """Cliente -> servidor: propõe modo, algoritmo e tamanho máximo do texto."""
-    payload = DELIM_PAYLOAD.join([MODO_PADRAO, ALGO_PADRAO, str(tamanho_max_texto)])
+    payload = DELIM_PAYLOAD.join([modo,algoritimo , str(tamanho_max_texto)])
     checksum = calcular_checksum(ALGORITMO_CHECKSUM_PADRAO,payload) # mensagens de controle tambem precisam de checksum, mesmo que nao carreguem texto do usuario
     return montar_pacote(TYPE_HANDSHAKE_REQ, 0, checksum, payload)
 
-def montar_handshake_ack(tamanho_max_texto, tamanho_janela):
+def montar_handshake_ack(modo,algoritimo,tamanho_max_texto, tamanho_janela):
     """Servidor -> cliente: confirma os parâmetros e informa o tamanho da janela."""
-    payload = DELIM_PAYLOAD.join([MODO_PADRAO, ALGO_PADRAO, str(tamanho_max_texto), str(tamanho_janela)])
+    payload = DELIM_PAYLOAD.join([modo,algoritimo, str(tamanho_max_texto), str(tamanho_janela)])
     checksum = calcular_checksum(ALGORITMO_CHECKSUM_PADRAO,payload)
     return montar_pacote(TYPE_HANDSHAKE_ACK, 0, checksum, payload)
 
@@ -73,11 +73,11 @@ def parsear_handshake(bruto):
 
 # para testar
 if __name__ =="__main__":
-    pedido=montar_handshake_request(50)
+    pedido=montar_handshake_request(MODO_LOTE,GNB,50)
     print("Pacote enviado pelo cliente:", pedido)
     print("Parseado pelo servidor:", parsear_handshake(pedido))
 
-    resposta=montar_handshake_ack(50,5)
+    resposta=montar_handshake_ack(MODO_LOTE,GNB,50,5)
     print("\nPacote enviado pelo servidor:", resposta)
     print("Parseado pelo cliente:", parsear_handshake(resposta))
     print("\n")
