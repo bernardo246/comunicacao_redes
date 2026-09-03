@@ -15,7 +15,7 @@ def iniciar_servidor(host, porta):
     return servidor
 
 def receber_dados(servidor):
-    endereco_cliente, dados = servidor.recvfrom(config.TAM_RECV)  # Recebe os dados e o endereço, por ser UDP precisa guardar o endereço
+    dados, endereco_cliente = servidor.recvfrom(config.TAM_RECV)  # Recebe os dados e o endereço, por ser UDP precisa guardar o endereço
     pacote = dados.decode(config.ENCODING) # decodifica de bytes para string
     return endereco_cliente,pacote
 
@@ -27,7 +27,7 @@ def processar_pacotes(pacote_str):   # recebe o recv e chama a função parsear 
 #codificar a string do pacote para bits
 #enviar para o endereço para cliente
 def responder_handshake(servidor,endereco_cliente,dados):
-    ack = protocol.montar_handshake_ack(dados["modo"], dados["algoritimo"],dados["tamanho_max_texto"], config.JANELA_INICIAL)
+    ack = protocol.montar_handshake_ack(dados["modo_retransmissao"], dados["tipo_envio"],dados["tamanho_max_texto"], config.JANELA_INICIAL)
 
     ack_bytes = ack.encode(config.ENCODING)
 
@@ -40,7 +40,7 @@ def main():
     servidor = iniciar_servidor(config.HOST,config.PORTA)
 
     while True:
-        dados, endereco_cliente = receber_dados(servidor)
+        endereco_cliente, dados = receber_dados(servidor)
         info = processar_pacotes(dados)
 
         if info["tipo"] == config.TYPE_HANDSHAKE_REQ:
@@ -51,4 +51,3 @@ def main():
 
 if __name__ == "__main__":
     main()
-
