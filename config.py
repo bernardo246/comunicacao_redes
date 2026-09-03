@@ -34,9 +34,20 @@ JANELA_MIN = 1
 JANELA_MAX = 5
 JANELA_INICIAL = 5        # valor inicial determinado pelo servidor
 
-# configuracao do handshake: modo de operacao e algoritmo de codificacao
+# ---------------------------------------------------------------- handshake
+
+# valores possiveis para o modo de retransmissao
+GBN = "GBN"               # Go-Back-N
+SR  = "SR"                # Repeticao Seletiva
+
+# valores possiveis para o tipo de envio
 MODO_LOTE = "LOTE"
-GNB ="GNB"
-MODO_INDIVIDUAL="IND"
-SR="SR"
-ALGORITMO_CHECKSUM_PADRAO = "Ascii"  # é o algoritmo de que vai ser usado para o checksum
+MODO_INDIVIDUAL = "IND"
+
+# valores possiveis para o algoritmo de checksum
+CHECKSUM_ASCII = "Ascii"
+
+# padroes usados pelo cliente ao propor o handshake
+MODO_PADRAO = GBN                          # retransmissao: GBN ou SR
+ENVIO_PADRAO = MODO_LOTE                   # envio: LOTE ou INDIVIDUAL
+ALGORITMO_CHECKSUM_PADRAO = CHECKSUM_ASCII # algoritmo do checksum

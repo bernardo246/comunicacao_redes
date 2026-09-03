@@ -42,51 +42,51 @@ def calcular_checksum(algoritmo,payload):
 
 
 # Funções de handshake
-def montar_handshake_request(modo,algoritimo,tamanho_max_texto): 
-    """Cliente -> servidor: propõe modo, algoritmo e tamanho máximo do texto."""
-    payload = DELIM_PAYLOAD.join([modo,algoritimo , str(tamanho_max_texto)])
-    checksum = calcular_checksum(ALGORITMO_CHECKSUM_PADRAO,payload) # mensagens de controle tambem precisam de checksum, mesmo que nao carreguem texto do usuario
+def montar_handshake_request(modo_retransmissao, tipo_envio, tamanho_max_texto):
+    """Cliente -> servidor: propõe modo de retransmissão, tipo de envio e tamanho máximo do texto."""
+    payload = DELIM_PAYLOAD.join([modo_retransmissao, tipo_envio, str(tamanho_max_texto)])
+    checksum = calcular_checksum(ALGORITMO_CHECKSUM_PADRAO, payload)  # mensagens de controle tambem precisam de checksum, mesmo que nao carreguem texto do usuario
     return montar_pacote(TYPE_HANDSHAKE_REQ, 0, checksum, payload)
 
-def montar_handshake_ack(modo,algoritimo,tamanho_max_texto, tamanho_janela):
+def montar_handshake_ack(modo_retransmissao, tipo_envio, tamanho_max_texto, tamanho_janela):
     """Servidor -> cliente: confirma os parâmetros e informa o tamanho da janela."""
-    payload = DELIM_PAYLOAD.join([modo,algoritimo, str(tamanho_max_texto), str(tamanho_janela)])
-    checksum = calcular_checksum(ALGORITMO_CHECKSUM_PADRAO,payload)
+    payload = DELIM_PAYLOAD.join([modo_retransmissao, tipo_envio, str(tamanho_max_texto), str(tamanho_janela)])
+    checksum = calcular_checksum(ALGORITMO_CHECKSUM_PADRAO, payload)
     return montar_pacote(TYPE_HANDSHAKE_ACK, 0, checksum, payload)
 
 def parsear_handshake(bruto):
     """Extrai os campos de uma mensagem de handshake (request ou ack)."""
     pacote = parsear_pacote(bruto)
     campos = pacote["payload"].split(DELIM_PAYLOAD)
- 
+
     resultado = {
         "tipo": pacote["tipo"],
-        "modo": campos[0],
-        "algoritmo": campos[1],
+        "modo_retransmissao": campos[0],
+        "tipo_envio": campos[1],
         "tamanho_max_texto": int(campos[2]),
     }
-    
+
     if pacote["tipo"] == TYPE_HANDSHAKE_ACK:
         resultado["tamanho_janela"] = int(campos[3])
     return resultado
 
 
 # para testar
-if __name__ =="__main__":
-    pedido=montar_handshake_request(MODO_LOTE,GNB,50)
+if __name__ == "__main__":
+    pedido = montar_handshake_request(GBN, MODO_LOTE, 50)
     print("Pacote enviado pelo cliente:", pedido)
     print("Parseado pelo servidor:", parsear_handshake(pedido))
 
-    resposta=montar_handshake_ack(MODO_LOTE,GNB,50,5)
+    resposta = montar_handshake_ack(GBN, MODO_LOTE, 50, 5)
     print("\nPacote enviado pelo servidor:", resposta)
     print("Parseado pelo cliente:", parsear_handshake(resposta))
     print("\n")
-    desembrulhar_pedido=parsear_handshake(pedido)
+    desembrulhar_pedido = parsear_handshake(pedido)
     if isinstance(desembrulhar_pedido, dict):
         for chave, valor in desembrulhar_pedido.items():
             print(f"{chave}: {valor}")
     print("\n")
-    desembrulhar_resposta=parsear_handshake(resposta)
+    desembrulhar_resposta = parsear_handshake(resposta)
     if isinstance(desembrulhar_resposta, dict):
         for chave, valor in desembrulhar_resposta.items():
             print(f"{chave}: {valor}")
