@@ -4,8 +4,10 @@ import socket
 from config import *
 from protocol import montar_handshake_request, parsear_handshake
 
-
-
+""" 
+OBS: so tem que deixar essa função ser mais maleavel, sendo possivel escolher gbn ou sr, lote ou individual
+e a quantidade de texto, mas se n inserir usa o padrão default
+"""
 def enviar_handshake_padrao():
     sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM) # criando socket e definindo que é udp
     sock.settimeout(5) # definindo o tempo limite de espera para receber a resposta do servidor (em segundos)
