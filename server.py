@@ -23,30 +23,75 @@ def processar_pacotes(pacote_str):   # recebe o recv e chama a função parsear 
     dados = protocol.parsear_handshake(pacote_str)
     return dados
 
+def validar_parametros(dados):
+    if dados["modo_retransmissao"] not in (config.GBN, config.SR):
+        return None, f"modo de retransmissao invalido: {dados['modo_retransmissao']}"
+
+    if dados["tipo_envio"] not in (config.MODO_LOTE, config.MODO_INDIVIDUAL):
+        return None, f"tipo de envio invalido: {dados['tipo_envio']}"
+
+    tamanho = dados["tamanho_max_texto"]
+    if tamanho < config.MIN_TEXTO:
+        print(f"[servidor] tamanho proposto ({tamanho}) abaixo do minimo, ajustando para {config.MIN_TEXTO}")
+        tamanho = config.MIN_TEXTO
+
+    aceitos = {
+        "modo_retransmissao": dados["modo_retransmissao"],
+        "tipo_envio": dados["tipo_envio"],
+        "tamanho_max_texto": tamanho,
+        "tamanho_janela": config.JANELA_INICIAL,
+    }
+    return aceitos, None
+
 #montar o pacote de resposta
 #codificar a string do pacote para bits
 #enviar para o endereço para cliente
-def responder_handshake(servidor,endereco_cliente,dados):
-    ack = protocol.montar_handshake_ack(dados["modo_retransmissao"], dados["tipo_envio"],dados["tamanho_max_texto"], config.JANELA_INICIAL)
+def responder_handshake(servidor,endereco_cliente,parametros):
+    ack = protocol.montar_handshake_ack(parametros["modo_retransmissao"], parametros["tipo_envio"],parametros["tamanho_max_texto"], parametros["tamanho_janela"])
 
     ack_bytes = ack.encode(config.ENCODING)
 
     servidor.sendto(ack_bytes, endereco_cliente)
+    return ack
 
 def encerrar_servidor(servidor):
     servidor.close()
 
 def main():
     servidor = iniciar_servidor(config.HOST,config.PORTA)
+    print(f"[servidor] escutando em {config.HOST}:{config.PORTA} (UDP). Ctrl+C para encerrar.")
 
-    while True:
-        endereco_cliente, dados = receber_dados(servidor)
-        info = processar_pacotes(dados)
+    try:
+        while True:
+            try:
+                endereco_cliente, dados = receber_dados(servidor)
+            except UnicodeDecodeError as erro:
+                print(f"[servidor] datagrama nao decodificavel, descartado: {erro}")
+                continue
 
-        if info["tipo"] == config.TYPE_HANDSHAKE_REQ:
-            responder_handshake(servidor,endereco_cliente,info)
-        else:
-            print("Tipo não encontrado")
+            print(f"[servidor] recebido de {endereco_cliente}: {dados}")
+
+            try:
+                info = processar_pacotes(dados)
+            except (ValueError, IndexError) as erro:
+                print(f"[servidor] pacote malformado, descartado: {erro}")
+                continue
+
+            if info["tipo"] != config.TYPE_HANDSHAKE_REQ:
+                print(f"[servidor] tipo nao esperado nesta etapa: {info['tipo']}, descartado")
+                continue
+
+            parametros, motivo = validar_parametros(info)
+            if motivo is not None:
+                print(f"[servidor] handshake recusado: {motivo}, descartado")
+                continue
+
+            ack = responder_handshake(servidor,endereco_cliente,parametros)
+            print(f"[servidor] enviado para {endereco_cliente}: {ack}")
+    except KeyboardInterrupt:
+        print("\n[servidor] encerrado pelo usuario.")
+    finally:
+        encerrar_servidor(servidor)
 
 
 if __name__ == "__main__":
