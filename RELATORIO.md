@@ -3,19 +3,9 @@
 > Documento incremental: evolui a cada checkpoint, conforme exigido na especificação.
 > **Status atual: Checkpoint 1 — Handshake & Sockets (entrega em 09/09/2026).**
 
-## 1. Identificação
-
-| Campo | Conteúdo |
-| :--- | :--- |
-| Disciplina | Comunicação e Redes |
-| Trabalho | Trabalho I — Transporte confiável na camada de aplicação |
-| Grupo | *(preencher com os nomes dos integrantes)* |
-| Monitor(a) | *(preencher)* |
-| Repositório | *(preencher com o link do repositório)* |
-
 ---
 
-## 2. Visão geral da aplicação
+## 1. Visão geral da aplicação
 
 Aplicação cliente-servidor que implementa, **na camada de aplicação**, um transporte
 confiável de dados sobre **UDP** (socket `SOCK_DGRAM`). O UDP foi escolhido de
@@ -39,9 +29,9 @@ testar o protocolo inteiro sem subir socket nenhum (grupos A e D dos testes no R
 
 ---
 
-## 3. Especificação do protocolo
+## 2. Especificação do protocolo
 
-### 3.1 Formato do pacote
+### 2.1 Formato do pacote
 
 Todo pacote é uma string ASCII/UTF-8 com quatro campos separados por `|`:
 
@@ -59,14 +49,14 @@ tipo|seq|checksum|payload
 O parsing usa `split("|", 3)`: no máximo 3 divisões, garantindo que um payload que
 contenha `|` não seja picado (testado em A5).
 
-### 3.2 Checksum
+### 2.2 Checksum
 
 Algoritmo **ASCII**, implementado à mão (`protocol.calcular_checksum`), sem biblioteca
 externa: soma de `ord(c)` para cada caractere do payload. É **fixo** para toda a
 aplicação — não é negociado no handshake. Trocar de algoritmo (ex.: CRC16) exigiria
 mudar os dois lados, e a função já levanta `ValueError` para algoritmo desconhecido.
 
-### 3.3 Handshake (Checkpoint 1)
+### 2.3 Handshake (Checkpoint 1)
 
 Duas mensagens, iniciadas pelo cliente:
 
@@ -89,7 +79,7 @@ cliente → servidor : HS|0|710|GBN,LOTE,30
 servidor → cliente : HSACK|0|807|GBN,LOTE,30,5
 ```
 
-### 3.4 Parâmetros negociados
+### 2.4 Parâmetros negociados
 
 | Parâmetro | Valores | Quem decide |
 | :--- | :--- | :--- |
@@ -101,7 +91,7 @@ servidor → cliente : HSACK|0|807|GBN,LOTE,30,5
 O `tamanho_janela` não vai no `HS`: pelo enunciado, a janela é a janela de recepção do
 servidor e é ele quem a determina. O cliente descobre o valor ao ler o `HSACK`.
 
-### 3.5 Regras de decisão do servidor
+### 2.5 Regras de decisão do servidor
 
 1. Datagrama que não decodifica em UTF-8 → descartado, com log.
 2. Pacote fora do formato de 4 campos → descartado, com log (`ValueError`/`IndexError` tratados).
@@ -113,13 +103,13 @@ servidor e é ele quem a determina. O cliente descobre o valor ao ler o `HSACK`.
 Em nenhuma hipótese um pacote inválido derruba o servidor: o laço principal trata as
 exceções por datagrama e segue atendendo.
 
-### 3.6 Temporizador e retransmissão (lado cliente)
+### 2.6 Temporizador e retransmissão (lado cliente)
 
 O cliente usa `settimeout(5)` e reenvia o `HS` até **5 vezes**. Se as 5 tentativas
 expirarem, ele informa o erro e sai com código 1. É a primeira das características de
 transporte confiável exigidas pela tabela 3.1 do livro a aparecer no código.
 
-### 3.7 Máquina de estados (FSM) do handshake
+### 2.7 Máquina de estados (FSM) do handshake
 
 ```
 CLIENTE                                  SERVIDOR
@@ -136,7 +126,7 @@ CLIENTE                                  SERVIDOR
 
 ---
 
-## 4. Cobertura da tabela 3.1 (transporte confiável)
+## 3. Cobertura da tabela 3.1 (transporte confiável)
 
 | Mecanismo | Situação no Checkpoint 1 |
 | :--- | :--- |
@@ -149,7 +139,7 @@ CLIENTE                                  SERVIDOR
 
 ---
 
-## 5. Manual de utilização
+## 4. Manual de utilização
 
 Requisito: **Python 3** (testado na 3.14). Nenhuma dependência externa.
 
@@ -183,7 +173,7 @@ entre máquinas diferentes, basta trocar o `HOST` para o IP do servidor.
 
 ---
 
-## 6. Testes
+## 5. Testes
 
 Os testes estão separados em quatro blocos, do mais simples para o mais completo. A ideia
 é que cada bloco responda uma pergunta diferente.
@@ -243,11 +233,9 @@ Para rodar um teste por vez na mão, os comandos de cada um estão no [README.md
 
 ---
 
-## 7. Processo de construção e uso de IA
+## 6. Processo de construção e uso de IA
 
-### 7.1 Estratégia de aprendizado com IA
-
-*(preencher pelo grupo — sugestão de roteiro:)*
+### 6.1 Estratégia de aprendizado com IA
 
 - Como a IA foi usada para entender GBN × SR e decidir pelo GBN como modo default.
 - Como a IA ajudou a modelar a FSM do handshake e a desenhar o formato do pacote
@@ -255,7 +243,7 @@ Para rodar um teste por vez na mão, os comandos de cada um estão no [README.md
 - Conceitos que ficaram mais claros com a explicação da IA (ACK cumulativo × individual,
   papel do temporizador, por que o receptor do GBN não precisa de buffer).
 
-### 7.2 Análise crítica e debugging
+### 6.2 Análise crítica e debugging
 
 Registrar aqui os casos em que a revisão do grupo pegou problema. Exemplos já
 verificados neste checkpoint:
@@ -282,16 +270,9 @@ verificados neste checkpoint:
    mesmo cenário caiu em `socket.timeout` e as 5 retransmissões aconteceram normalmente.
    *Pendência assumida:* tratar `ConnectionResetError` junto com `socket.timeout`.
 
-*(Acrescentar aqui os casos em que a IA sugeriu algo incorreto e como o grupo percebeu.)*
 
-### 7.3 Prompt log
 
-*(preencher: links das conversas ou anexo com os principais prompts usados na
-arquitetura, na implementação e nos testes.)*
-
----
-
-## 8. Limitações conhecidas / próximos passos
+## 7. Limitações conhecidas / próximos passos
 
 | Item | Checkpoint previsto |
 | :--- | :--- |
