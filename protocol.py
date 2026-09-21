@@ -71,22 +71,9 @@ def parsear_handshake(bruto):
     return resultado
 
 
-# para testar
-if __name__ == "__main__":
-    pedido = montar_handshake_request(GBN, MODO_LOTE, 50)
-    print("Pacote enviado pelo cliente:", pedido)
-    print("Parseado pelo servidor:", parsear_handshake(pedido))
-
-    resposta = montar_handshake_ack(GBN, MODO_LOTE, 50, 5)
-    print("\nPacote enviado pelo servidor:", resposta)
-    print("Parseado pelo cliente:", parsear_handshake(resposta))
-    print("\n")
-    desembrulhar_pedido = parsear_handshake(pedido)
-    if isinstance(desembrulhar_pedido, dict):
-        for chave, valor in desembrulhar_pedido.items():
-            print(f"{chave}: {valor}")
-    print("\n")
-    desembrulhar_resposta = parsear_handshake(resposta)
-    if isinstance(desembrulhar_resposta, dict):
-        for chave, valor in desembrulhar_resposta.items():
-            print(f"{chave}: {valor}")
+def fragmentar_texto(string):
+    lista_de_payload=[]
+    for i in range(0,len(string),4):
+        pedaco=string[i:i+4]
+        lista_de_payload[i].append(pedaco)
+    return lista_de_payload
