@@ -75,5 +75,24 @@ def fragmentar_texto(string):
     lista_de_payload=[]
     for i in range(0,len(string),4):
         pedaco=string[i:i+4]
-        lista_de_payload[i].append(pedaco)
+        lista_de_payload.append(pedaco)
     return lista_de_payload
+
+def montar_pacote_data(seq,payload):
+    checksum = calcular_checksum(ALGORITMO_CHECKSUM_PADRAO, payload)
+    pacote= montar_pacote(TYPE_DATA,seq,checksum,payload)
+    return pacote
+
+def parsear_pacote_data(pacote_bruto):
+    pacote = parsear_pacote(pacote_bruto)
+    checksum_esperado = calcular_checksum(ALGORITMO_CHECKSUM_PADRAO, pacote["payload"])
+    pacote["checksum_valido"] = (checksum_esperado == pacote["checksum"])
+    return pacote
+
+def montar_ack(seq):
+    checksum = calcular_checksum(ALGORITMO_CHECKSUM_PADRAO, "")
+    return montar_pacote(TYPE_DATA_ACK, seq, checksum, "")
+
+def parsear_ack(packege):
+    return parsear_pacote(packege)
+
