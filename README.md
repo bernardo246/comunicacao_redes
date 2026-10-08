@@ -7,6 +7,9 @@
       <img src="https://img.shields.io/badge/Relatorio_Completo_Redes-blue?style=for-the-badge&logo=google-docs&logoColor=white" />
 </a>
 
+<a href="https://docs.google.com/document/d/1c5e3sfxl6mpeFje5wGmIONTZkGtjTvkRjPFccinl5sM/edit?tab=t.0">
+      <img src="https://img.shields.io/badge/Relatorio_IA_Checkpoint 2-blue?style=for-the-badge&logo=google-docs&logoColor=white" />
+</a>
 - Relatório completo do trabalho: badge acima (Google Docs).
 - Versão versionada no repositório: [RELATORIO.md](RELATORIO.md) — especificação do
   protocolo, manual de utilização, descrição dos testes e a seção "Processo de construção
