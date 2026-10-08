@@ -8,29 +8,32 @@ import socket
 import protocol
 
 def iniciar_servidor(host, porta):
-    servidor = socket.socket(socket.AF_INET, socket.SOCK_DGRAM) # criando socket e definindo que é udp
-    servidor.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1) # definindo a função
+    #AF_INET indica endereços IPv4 (ex.: 127.0.0.1).
+    servidor = socket.socket(socket.AF_INET, socket.SOCK_DGRAM) # criando socket e definindo que é udp 
+    servidor.setsockopt(socket.SOL_SOCKET, socket.SO _REUSEADDR, 1) # permite reusar a porta ao reiniciar
 
     servidor.bind((host, porta)) # definindo a porta e o ip do server
     return servidor
 
 def receber_dados(servidor):
+    # TAM_RECV é o máximo de bytes lidos. Se o datagrama for maior, o excesso é perdido.
     dados, endereco_cliente = servidor.recvfrom(config.TAM_RECV)  # Recebe os dados e o endereço, por ser UDP precisa guardar o endereço
     pacote = dados.decode(config.ENCODING) # decodifica de bytes para string
     return endereco_cliente,pacote
 
-def processar_pacotes(pacote_str):   # recebe o recv e chama a função parsear do protocol
+def processar_pacotes(pacote_str):   # Essa função só delega para protocol.parsear_handshake 
+                                    # protocol.py cuida do formato das mensagens
     dados = protocol.parsear_handshake(pacote_str)
     return dados
 
 def validar_parametros(dados):
-    if dados["modo_retransmissao"] not in (config.GBN, config.SR):
+    if dados["modo_retransmissao"] not in (config.GBN, config.SR): #  so preve esses 2 GBN, SR}
         return None, f"modo de retransmissao invalido: {dados['modo_retransmissao']}"
 
     if dados["tipo_envio"] not in (config.MODO_LOTE, config.MODO_INDIVIDUAL):
         return None, f"tipo de envio invalido: {dados['tipo_envio']}"
 
-    tamanho = dados["tamanho_max_texto"]
+    tamanho = dados["tamanho_max_texto"]        # ajusta para 30	A spec define 30 como mínimo/default; ajustar é mais tolerante que recusar
     if tamanho < config.MIN_TEXTO:
         print(f"[servidor] tamanho proposto ({tamanho}) abaixo do minimo, ajustando para {config.MIN_TEXTO}")
         tamanho = config.MIN_TEXTO
@@ -43,9 +46,9 @@ def validar_parametros(dados):
     }
     return aceitos, None
 
-#montar o pacote de resposta
-#codificar a string do pacote para bits
-#enviar para o endereço para cliente
+#montar o pacote de resposta HSACK via protocol.montar_handshake_ack
+#codificar a string do pacote para bits  # Converte a string em bytes, porque sockets só transmitem bytes.
+#enviar para o endereço para cliente # Envia com sendto(bytes, endereco_cliente). Em UDP você precisa dizer o destino a cada envio. 
 def responder_handshake(servidor,endereco_cliente,parametros):
     ack = protocol.montar_handshake_ack(parametros["modo_retransmissao"], parametros["tipo_envio"],parametros["tamanho_max_texto"], parametros["tamanho_janela"])
 
