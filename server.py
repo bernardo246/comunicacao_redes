@@ -10,7 +10,7 @@ import protocol
 def iniciar_servidor(host, porta):
     #AF_INET indica endereços IPv4 (ex.: 127.0.0.1).
     servidor = socket.socket(socket.AF_INET, socket.SOCK_DGRAM) # criando socket e definindo que é udp 
-    servidor.setsockopt(socket.SOL_SOCKET, socket.SO _REUSEADDR, 1) # permite reusar a porta ao reiniciar
+    servidor.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1) # permite reusar a porta ao reiniciar
 
     servidor.bind((host, porta)) # definindo a porta e o ip do server
     return servidor
