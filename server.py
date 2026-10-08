@@ -70,7 +70,12 @@ def tratar_handshake(servidor, endereco_cliente, info):
 
     ack = responder_handshake(servidor, endereco_cliente, parametros)
     print(f"[servidor] enviado para {endereco_cliente}: {ack}")
-    
+
+def tratar_dados(servidor, endereco_cliente, info):
+    print(f"[servidor] DADOS de {endereco_cliente} | seq={info['seq']} | "
+          f"checksum={info['checksum']} | valido={info['checksum_valido']} | "
+          f"payload={info['payload']!r}")
+
 def encerrar_servidor(servidor):
     servidor.close()
 
@@ -94,17 +99,13 @@ def main():
                 print(f"[servidor] pacote malformado, descartado: {erro}")
                 continue
 
-            if info["tipo"] != config.TYPE_HANDSHAKE_REQ:
-                print(f"[servidor] tipo nao esperado nesta etapa: {info['tipo']}, descartado")
-                continue
-
-            parametros, motivo = validar_parametros(info)
-            if motivo is not None:
-                print(f"[servidor] handshake recusado: {motivo}, descartado")
-                continue
-
-            ack = responder_handshake(servidor,endereco_cliente,parametros)
-            print(f"[servidor] enviado para {endereco_cliente}: {ack}")
+            # roteamento por tipo: cada tipo de pacote vai para a sua funcao
+            if info["tipo"] == config.TYPE_HANDSHAKE_REQ:
+                tratar_handshake(servidor, endereco_cliente, info)
+            elif info["tipo"] == config.TYPE_DATA:
+                tratar_dados(servidor, endereco_cliente, info)
+            else:
+                print(f"[servidor] tipo nao esperado: {info['tipo']}, descartado")
     except KeyboardInterrupt:
         print("\n[servidor] encerrado pelo usuario.")
     finally:
