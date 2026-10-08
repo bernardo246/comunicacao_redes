@@ -21,10 +21,15 @@ def receber_dados(servidor):
     pacote = dados.decode(config.ENCODING) # decodifica de bytes para string
     return endereco_cliente,pacote
 
-def processar_pacotes(pacote_str):   # Essa função só delega para protocol.parsear_handshake 
-                                    # protocol.py cuida do formato das mensagens
-    dados = protocol.parsear_handshake(pacote_str)
-    return dados
+def processar_pacotes(pacote_str):   # descobre o tipo do pacote e chama o parser certo do protocol
+    tipo = protocol.parsear_pacote(pacote_str)["tipo"]  #leitura para descobrir o tipo
+
+    if tipo == config.TYPE_HANDSHAKE_REQ:
+        return protocol.parsear_handshake(pacote_str)
+    if tipo == config.TYPE_DATA:
+        return protocol.parsear_pacote_data(pacote_str)
+
+    return {"tipo": tipo}  # devolve o tipo, o main decide o que fazer
 
 def validar_parametros(dados):
     if dados["modo_retransmissao"] not in (config.GBN, config.SR): #  so preve esses 2 GBN, SR}
@@ -57,6 +62,15 @@ def responder_handshake(servidor,endereco_cliente,parametros):
     servidor.sendto(ack_bytes, endereco_cliente)
     return ack
 
+def tratar_handshake(servidor, endereco_cliente, info):
+    parametros, motivo = validar_parametros(info)
+    if motivo is not None:
+        print(f"[servidor] handshake recusado: {motivo}, descartado")
+        return
+
+    ack = responder_handshake(servidor, endereco_cliente, parametros)
+    print(f"[servidor] enviado para {endereco_cliente}: {ack}")
+    
 def encerrar_servidor(servidor):
     servidor.close()
 
