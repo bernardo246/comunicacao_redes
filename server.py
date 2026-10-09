@@ -107,6 +107,26 @@ def enviar_ack(servidor, endereco_cliente, seq):
     print(f"[servidor] ACK enviado para {endereco_cliente}: {ack}")
 
 
+def receber_gbn(servidor, endereco_cliente, sessao, info):
+    seq = info["seq"]
+
+    # se tiver valido
+    if info["checksum_valido"] and seq == sessao["seq_esperado"]:
+        sessao["recebidos"].append(info["payload"])   # entrega em ordem
+        enviar_ack(servidor, endereco_cliente, seq)   # "recebi tudo ate seq"
+        sessao["seq_esperado"] += 1                    # proximo da fila
+        return
+
+    # Qualquer outro 
+    if not info["checksum_valido"]:
+        motivo = "checksum invalido"
+    else:
+        motivo = f"fora de ordem (esperado {sessao['seq_esperado']})"
+    print(f"[servidor] GBN: seq={seq} descartado, {motivo}")
+
+    if sessao["seq_esperado"] > 0:
+        enviar_ack(servidor, endereco_cliente, sessao["seq_esperado"] - 1)
+                   
 def tratar_dados(servidor, endereco_cliente, info, sessoes):
     sessao = sessoes.get(endereco_cliente)
     if sessao is None:
