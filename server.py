@@ -126,7 +126,39 @@ def receber_gbn(servidor, endereco_cliente, sessao, info):
 
     if sessao["seq_esperado"] > 0:
         enviar_ack(servidor, endereco_cliente, sessao["seq_esperado"] - 1)
-                   
+
+# SR aceita qualquer pacote dentro da janela,
+def receber_sr(servidor, endereco_cliente, sessao, info):
+    seq = info["seq"]
+    base = sessao["base"]                                
+    janela = sessao["parametros"]["tamanho_janela"]      
+
+    # corrompido descarta.
+    # Sem ACK, o timer do cliente  estoura e ele reenvia.
+    if not info["checksum_valido"]:
+        print(f"[servidor] SR: seq={seq} descartado, checksum invalido")
+        return
+
+    if base <= seq < base + janela:
+        enviar_ack(servidor, endereco_cliente, seq)      
+        if seq not in sessao["buffer"]:                  
+            sessao["buffer"][seq] = info["payload"]
+
+        while sessao["base"] in sessao["buffer"]:
+            sessao["recebidos"].append(sessao["buffer"].pop(sessao["base"]))
+            sessao["base"] += 1
+
+        print(f"[servidor] SR: janela agora [{sessao['base']}, "
+              f"{sessao['base'] + janela - 1}], buffer={sorted(sessao['buffer'])}")
+        return
+
+    if base - janela <= seq < base:
+        print(f"[servidor] SR: seq={seq} duplicado (ja entregue), reenviando ACK")
+        enviar_ack(servidor, endereco_cliente, seq)
+        return
+
+    print(f"[servidor] SR: seq={seq} fora da janela [{base}, {base + janela - 1}], descartado")
+            
 def tratar_dados(servidor, endereco_cliente, info, sessoes):
     sessao = sessoes.get(endereco_cliente)
     if sessao is None:
