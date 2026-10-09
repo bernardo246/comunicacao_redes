@@ -86,7 +86,7 @@ def criar_sessao(parametros):
     }
 
 def tratar_handshake(servidor, endereco_cliente, info, sessoes):
-    # checksum corrompido, descarta em silencio.
+    # checksum corrompido, descarta
     if not info["checksum_valido"]:
         print(f"[servidor] HS de {endereco_cliente} com checksum invalido, descartado")
         return
@@ -100,6 +100,12 @@ def tratar_handshake(servidor, endereco_cliente, info, sessoes):
         print(f"[servidor] {endereco_cliente} refez o handshake, sessao reiniciada")
 
     sessoes[endereco_cliente] = criar_sessao(parametros)
+
+def enviar_ack(servidor, endereco_cliente, seq):
+    ack = protocol.montar_ack(seq)                         
+    servidor.sendto(ack.encode(config.ENCODING), endereco_cliente)
+    print(f"[servidor] ACK enviado para {endereco_cliente}: {ack}")
+
 
 def tratar_dados(servidor, endereco_cliente, info, sessoes):
     sessao = sessoes.get(endereco_cliente)
