@@ -62,7 +62,17 @@ def responder_handshake(servidor,endereco_cliente,parametros):
     servidor.sendto(ack_bytes, endereco_cliente)
     return ack
 
-def tratar_handshake(servidor, endereco_cliente, info):
+
+def criar_sessao(parametros):
+    return {
+        "parametros": parametros,
+        "seq_esperado": 0,
+        "base": 0,
+        "buffer": {},
+        "recebidos": [],
+    }
+
+def tratar_handshake(servidor, endereco_cliente, info, sessoes):
     parametros, motivo = validar_parametros(info)
     if motivo is not None:
         print(f"[servidor] handshake recusado: {motivo}, descartado")
@@ -71,7 +81,17 @@ def tratar_handshake(servidor, endereco_cliente, info):
     ack = responder_handshake(servidor, endereco_cliente, parametros)
     print(f"[servidor] enviado para {endereco_cliente}: {ack}")
 
-def tratar_dados(servidor, endereco_cliente, info):
+    if endereco_cliente in sessoes:
+        print(f"[servidor] {endereco_cliente} refez o handshake, sessao reiniciada")
+
+    sessoes[endereco_cliente] = criar_sessao(parametros)
+
+def tratar_dados(servidor, endereco_cliente, info, sessoes):
+    sessao = sessoes.get(endereco_cliente)
+    if sessao is None:
+        print(f"[servidor] MSG de {endereco_cliente} sem handshake previo, descartado")
+        return
+
     print(f"[servidor] DADOS de {endereco_cliente} | seq={info['seq']} | "
           f"checksum={info['checksum']} | valido={info['checksum_valido']} | "
           f"payload={info['payload']!r}")
