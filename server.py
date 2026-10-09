@@ -169,6 +169,15 @@ def tratar_dados(servidor, endereco_cliente, info, sessoes):
           f"checksum={info['checksum']} | valido={info['checksum_valido']} | "
           f"payload={info['payload']!r}")
 
+    if sessao["parametros"]["modo_retransmissao"] == config.GBN:
+        receber_gbn(servidor, endereco_cliente, sessao, info)
+    else:
+        receber_sr(servidor, endereco_cliente, sessao, info)
+
+    print(f"[servidor] DADOS de {endereco_cliente} | seq={info['seq']} | "
+          f"checksum={info['checksum']} | valido={info['checksum_valido']} | "
+          f"payload={info['payload']!r}")
+
 def encerrar_servidor(servidor):
     servidor.close()
 
