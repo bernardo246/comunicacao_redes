@@ -86,10 +86,12 @@ def criar_sessao(parametros):
     }
 
 def tratar_handshake(servidor, endereco_cliente, info, sessoes):
-    parametros, motivo = validar_parametros(info)
-    if motivo is not None:
-        print(f"[servidor] handshake recusado: {motivo}, descartado")
+    # checksum corrompido, descarta em silencio.
+    if not info["checksum_valido"]:
+        print(f"[servidor] HS de {endereco_cliente} com checksum invalido, descartado")
         return
+
+    parametros, motivo = validar_parametros(info)
 
     ack = responder_handshake(servidor, endereco_cliente, parametros)
     print(f"[servidor] enviado para {endereco_cliente}: {ack}")
