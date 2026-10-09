@@ -21,15 +21,28 @@ def receber_dados(servidor):
     pacote = dados.decode(config.ENCODING) # decodifica de bytes para string
     return endereco_cliente,pacote
 
+def checksum_confere(pacote):
+    esperado = protocol.calcular_checksum(config.ALGORITMO_CHECKSUM_PADRAO, pacote["payload"])
+    return esperado == pacote["checksum"]
+
 def processar_pacotes(pacote_str):   # descobre o tipo do pacote e chama o parser certo do protocol
-    tipo = protocol.parsear_pacote(pacote_str)["tipo"]  #leitura para descobrir o tipo
+    # lê e separa os 4 campos tipo|seq|checksum|payload e precisar parsear de novo para conferir o checksum.
+    base = protocol.parsear_pacote(pacote_str)
+    tipo = base["tipo"]
 
     if tipo == config.TYPE_HANDSHAKE_REQ:
-        return protocol.parsear_handshake(pacote_str)
+        
+        if not checksum_confere(base):
+            return {"tipo": tipo, "checksum_valido": False}
+
+        info = protocol.parsear_handshake(pacote_str)
+        info["checksum_valido"] = True  
+        return info
+
     if tipo == config.TYPE_DATA:
         return protocol.parsear_pacote_data(pacote_str)
 
-    return {"tipo": tipo}  # devolve o tipo, o main decide o que fazer
+    return {"tipo": tipo}  
 
 def validar_parametros(dados):
     if dados["modo_retransmissao"] not in (config.GBN, config.SR): #  so preve esses 2 GBN, SR}
