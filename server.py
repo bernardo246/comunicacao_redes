@@ -101,6 +101,10 @@ def encerrar_servidor(servidor):
 
 def main():
     servidor = iniciar_servidor(config.HOST,config.PORTA)
+
+    # Dicionario de todas as sessoes ativas
+    sessoes = {}
+
     print(f"[servidor] escutando em {config.HOST}:{config.PORTA} (UDP). Ctrl+C para encerrar.")
 
     try:
@@ -119,11 +123,12 @@ def main():
                 print(f"[servidor] pacote malformado, descartado: {erro}")
                 continue
 
-            # roteamento por tipo: cada tipo de pacote vai para a sua funcao
+            # roteamento por tipo,cada tipo de pacote vai para a sua funcao
             if info["tipo"] == config.TYPE_HANDSHAKE_REQ:
-                tratar_handshake(servidor, endereco_cliente, info)
+                tratar_handshake(servidor, endereco_cliente, info, sessoes)
+
             elif info["tipo"] == config.TYPE_DATA:
-                tratar_dados(servidor, endereco_cliente, info)
+                tratar_dados(servidor, endereco_cliente, info, sessoes)
             else:
                 print(f"[servidor] tipo nao esperado: {info['tipo']}, descartado")
     except KeyboardInterrupt:
