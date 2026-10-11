@@ -7,12 +7,12 @@ import config
 import socket
 import protocol
 
+# cria o socket do servidor e deixa ele pronto pra receber dados
 def iniciar_servidor(host, porta):
-    #AF_INET indica endereços IPv4 (ex.: 127.0.0.1).
     servidor = socket.socket(socket.AF_INET, socket.SOCK_DGRAM) # criando socket e definindo que é udp 
     servidor.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1) # permite reusar a porta ao reiniciar
 
-    servidor.bind((host, porta)) # definindo a porta e o ip do server
+    servidor.bind((host, porta)) # associa o socket ao ip e porta
     return servidor
 
 def receber_dados(servidor):
@@ -21,9 +21,10 @@ def receber_dados(servidor):
     pacote = dados.decode(config.ENCODING) # decodifica de bytes para string
     return endereco_cliente,pacote
 
+# recebe o pacote já separado em capos
 def checksum_confere(pacote):
-    esperado = protocol.calcular_checksum(config.ALGORITMO_CHECKSUM_PADRAO, pacote["payload"])
-    return esperado == pacote["checksum"]
+    esperado = protocol.calcular_checksum(config.ALGORITMO_CHECKSUM_PADRAO, pacote["payload"]) # recaucula o checksum do payload e compara com o que veio no pacote 
+    return esperado == pacote["checksum"] # se for igual é true
 
 def processar_pacotes(pacote_str):   # descobre o tipo do pacote e chama o parser certo do protocol
     # lê e separa os 4 campos tipo|seq|checksum|payload e precisar parsear de novo para conferir o checksum.
@@ -164,10 +165,6 @@ def tratar_dados(servidor, endereco_cliente, info, sessoes):
     if sessao is None:
         print(f"[servidor] MSG de {endereco_cliente} sem handshake previo, descartado")
         return
-
-    print(f"[servidor] DADOS de {endereco_cliente} | seq={info['seq']} | "
-          f"checksum={info['checksum']} | valido={info['checksum_valido']} | "
-          f"payload={info['payload']!r}")
 
     if sessao["parametros"]["modo_retransmissao"] == config.GBN:
         receber_gbn(servidor, endereco_cliente, sessao, info)
