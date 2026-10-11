@@ -16,7 +16,7 @@ def iniciar_servidor(host, porta):
     return servidor
 
 def receber_dados(servidor):
-    # TAM_RECV é o máximo de bytes lidos. Se o datagrama for maior, o excesso é perdido.
+    # TAM_RECV é o máximo de bytes se o datagrama for maior, o excesso é perdido.
     dados, endereco_cliente = servidor.recvfrom(config.TAM_RECV)  # Recebe os dados e o endereço, por ser UDP precisa guardar o endereço
     pacote = dados.decode(config.ENCODING) # decodifica de bytes para string
     return endereco_cliente,pacote
@@ -26,34 +26,36 @@ def checksum_confere(pacote):
     esperado = protocol.calcular_checksum(config.ALGORITMO_CHECKSUM_PADRAO, pacote["payload"]) # recaucula o checksum do payload e compara com o que veio no pacote 
     return esperado == pacote["checksum"] # se for igual é true
 
-def processar_pacotes(pacote_str):   # descobre o tipo do pacote e chama o parser certo do protocol
-    # lê e separa os 4 campos tipo|seq|checksum|payload e precisar parsear de novo para conferir o checksum.
-    base = protocol.parsear_pacote(pacote_str)
+# recebe o pacote já decodificado em string
+def processar_pacotes(pacote_str):   
+    #Parse generico para descobrir o tipo e conferir o checksum/ parse especifico para extrair o conteudo
+    base = protocol.parsear_pacote(pacote_str) # chama um parse generico e separa em 4 campos
     tipo = base["tipo"]
 
-    if tipo == config.TYPE_HANDSHAKE_REQ:
+    if tipo == config.TYPE_HANDSHAKE_REQ: # Verifica se é uma requisição de handshake  
         
-        if not checksum_confere(base):
+        if not checksum_confere(base): # recalcula o checksum e compara
             return {"tipo": tipo, "checksum_valido": False}
 
-        info = protocol.parsear_handshake(pacote_str)
+        info = protocol.parsear_handshake(pacote_str) #checksum ok, chama o parse especifico
         info["checksum_valido"] = True  
         return info
 
+    # não é handhake confere se é um pacote de dados
     if tipo == config.TYPE_DATA:
         return protocol.parsear_pacote_data(pacote_str)
 
     return {"tipo": tipo}  
 
 def validar_parametros(dados):
-    if dados["modo_retransmissao"] not in (config.GBN, config.SR): #  so preve esses 2 GBN, SR}
+    if dados["modo_retransmissao"] not in (config.GBN, config.SR): #  so preve esses 2 GBN, SR
         return None, f"modo de retransmissao invalido: {dados['modo_retransmissao']}"
 
-    if dados["tipo_envio"] not in (config.MODO_LOTE, config.MODO_INDIVIDUAL):
+    if dados["tipo_envio"] not in (config.MODO_LOTE, config.MODO_INDIVIDUAL): # mesma lógica para o tipo de envio
         return None, f"tipo de envio invalido: {dados['tipo_envio']}"
 
     tamanho = dados["tamanho_max_texto"]        # ajusta para 30	A spec define 30 como mínimo/default; ajustar é mais tolerante que recusar
-    if tamanho < config.MIN_TEXTO:
+    if tamanho < config.MIN_TEXTO: # verifica se é maior que o minimo
         print(f"[servidor] tamanho proposto ({tamanho}) abaixo do minimo, ajustando para {config.MIN_TEXTO}")
         tamanho = config.MIN_TEXTO
 
@@ -66,8 +68,8 @@ def validar_parametros(dados):
     return aceitos, None
 
 #montar o pacote de resposta HSACK via protocol.montar_handshake_ack
-#codificar a string do pacote para bits  # Converte a string em bytes, porque sockets só transmitem bytes.
-#enviar para o endereço para cliente # Envia com sendto(bytes, endereco_cliente). Em UDP você precisa dizer o destino a cada envio. 
+# Converte a string em bytes, porque sockets só transmitem bytes.
+#enviar para o endereço para cliente
 def responder_handshake(servidor,endereco_cliente,parametros):
     ack = protocol.montar_handshake_ack(parametros["modo_retransmissao"], parametros["tipo_envio"],parametros["tamanho_max_texto"], parametros["tamanho_janela"])
 
@@ -75,7 +77,6 @@ def responder_handshake(servidor,endereco_cliente,parametros):
 
     servidor.sendto(ack_bytes, endereco_cliente)
     return ack
-
 
 def criar_sessao(parametros):
     return {
@@ -94,12 +95,15 @@ def tratar_handshake(servidor, endereco_cliente, info, sessoes):
 
     parametros, motivo = validar_parametros(info)
 
+    # monta e envia o hsack para o cliente com os parametros acietos
     ack = responder_handshake(servidor, endereco_cliente, parametros)
     print(f"[servidor] enviado para {endereco_cliente}: {ack}")
 
+    # Verifica se o endereço ja tem uma sessao aberta
     if endereco_cliente in sessoes:
         print(f"[servidor] {endereco_cliente} refez o handshake, sessao reiniciada")
 
+    # Cria uma nova sessao e guarda no dicionarioS
     sessoes[endereco_cliente] = criar_sessao(parametros)
 
 def enviar_ack(servidor, endereco_cliente, seq):
