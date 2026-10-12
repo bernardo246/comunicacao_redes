@@ -204,6 +204,9 @@ def main():
             except UnicodeDecodeError as erro:
                 print(f"[servidor] datagrama nao decodificavel, descartado: {erro}")
                 continue
+            except ConnectionResetError:
+                print("[servidor] cliente anterior fechou a porta (ConnectionResetError), ignorando")
+                continue
 
             print(f"[servidor] recebido de {endereco_cliente}: {dados}")
 
