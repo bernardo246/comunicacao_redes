@@ -85,6 +85,7 @@ def criar_sessao(parametros):
         "base": 0,
         "buffer": {},
         "recebidos": [],
+        "seq_final": None, 
     }
 
 def tratar_handshake(servidor, endereco_cliente, info, sessoes):
@@ -185,6 +186,17 @@ def tratar_dados(servidor, endereco_cliente, info, sessoes):
     print(f"[servidor] DADOS de {endereco_cliente} | seq={info['seq']} | "
           f"checksum={info['checksum']} | valido={info['checksum_valido']} | "
           f"payload={info['payload']!r}")
+
+# junta os payloads mostra a mensagem completa
+def finalizar_mensagem(endereco_cliente, sessao):
+    texto = "".join(sessao["recebidos"])
+    limite = sessao["parametros"]["tamanho_max_texto"]
+
+    print(f"[servidor] MENSAGEM COMPLETA de {endereco_cliente} "
+          f"({len(sessao['recebidos'])} pacotes, {len(texto)} caracteres): {texto!r}")
+
+    # prepara a sessao para a proxima mensagem
+    sessao["recebidos"] = []
 
 def encerrar_servidor(servidor):
     servidor.close()
