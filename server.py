@@ -106,57 +106,62 @@ def tratar_handshake(servidor, endereco_cliente, info, sessoes):
     # Cria uma nova sessao e guarda no dicionarioS
     sessoes[endereco_cliente] = criar_sessao(parametros)
 
+# recebe o socket,destino e seq
 def enviar_ack(servidor, endereco_cliente, seq):
-    ack = protocol.montar_ack(seq)                         
-    servidor.sendto(ack.encode(config.ENCODING), endereco_cliente)
+    ack = protocol.montar_ack(seq)                         # protocol monta a ack
+    servidor.sendto(ack.encode(config.ENCODING), endereco_cliente) # codifica para bytes e envia os bytes para o endereço
     print(f"[servidor] ACK enviado para {endereco_cliente}: {ack}")
 
 
 def receber_gbn(servidor, endereco_cliente, sessao, info):
-    seq = info["seq"]
+    seq = info["seq"] #guardando o número da sequencia
 
-    # se tiver valido
+    # se tiver valido tanto o pacote quanto a ordem
     if info["checksum_valido"] and seq == sessao["seq_esperado"]:
-        sessao["recebidos"].append(info["payload"])   # entrega em ordem
-        enviar_ack(servidor, endereco_cliente, seq)   # "recebi tudo ate seq"
-        sessao["seq_esperado"] += 1                    # proximo da fila
+        sessao["recebidos"].append(info["payload"])   
+        enviar_ack(servidor, endereco_cliente, seq)  
+        sessao["seq_esperado"] += 1                    
         return
 
-    # Qualquer outro 
+    # checksum invalido pacote vai ser descartado
     if not info["checksum_valido"]:
         motivo = "checksum invalido"
     else:
         motivo = f"fora de ordem (esperado {sessao['seq_esperado']})"
     print(f"[servidor] GBN: seq={seq} descartado, {motivo}")
 
+    # reenvia o ultimo ack do ultimo pacote recebido com ordem para avisar que ainda está parado nele
     if sessao["seq_esperado"] > 0:
         enviar_ack(servidor, endereco_cliente, sessao["seq_esperado"] - 1)
 
-# SR aceita qualquer pacote dentro da janela,
 def receber_sr(servidor, endereco_cliente, sessao, info):
+    # guarda os valores em variaveis
     seq = info["seq"]
     base = sessao["base"]                                
     janela = sessao["parametros"]["tamanho_janela"]      
 
-    # corrompido descarta.
-    # Sem ACK, o timer do cliente  estoura e ele reenvia.
+    # checksum corrompido, só descarta sem mandar ack
     if not info["checksum_valido"]:
         print(f"[servidor] SR: seq={seq} descartado, checksum invalido")
         return
 
+    # verifica se está na dentro da janela
     if base <= seq < base + janela:
-        enviar_ack(servidor, endereco_cliente, seq)      
-        if seq not in sessao["buffer"]:                  
+        enviar_ack(servidor, endereco_cliente, seq)       
+        if seq not in sessao["buffer"]:                 # guarda no buffer  
             sessao["buffer"][seq] = info["payload"]
 
+        #deslizamento da janela, perguntando se o pacote do inicio ja chegou (enquanti for sim)
         while sessao["base"] in sessao["buffer"]:
-            sessao["recebidos"].append(sessao["buffer"].pop(sessao["base"]))
-            sessao["base"] += 1
+            sessao["recebidos"].append(sessao["buffer"].pop(sessao["base"])) # remove do buffer e add o payload
+            sessao["base"] += 1 # sai do buffer e vai na ordem
 
+        # print da janela e do que tem no buffer
         print(f"[servidor] SR: janela agora [{sessao['base']}, "
               f"{sessao['base'] + janela - 1}], buffer={sorted(sessao['buffer'])}")
         return
 
+    # verifica na janela anterior
     if base - janela <= seq < base:
         print(f"[servidor] SR: seq={seq} duplicado (ja entregue), reenviando ACK")
         enviar_ack(servidor, endereco_cliente, seq)
@@ -165,16 +170,18 @@ def receber_sr(servidor, endereco_cliente, sessao, info):
     print(f"[servidor] SR: seq={seq} fora da janela [{base}, {base + janela - 1}], descartado")
             
 def tratar_dados(servidor, endereco_cliente, info, sessoes):
-    sessao = sessoes.get(endereco_cliente)
-    if sessao is None:
+    sessao = sessoes.get(endereco_cliente) # procura a sessao do cliente no dicionario
+    if sessao is None:     # sem sessao sem handshake previo, descarte
         print(f"[servidor] MSG de {endereco_cliente} sem handshake previo, descartado")
         return
 
+    # consulta o modo se foi gbn ou sr
     if sessao["parametros"]["modo_retransmissao"] == config.GBN:
         receber_gbn(servidor, endereco_cliente, sessao, info)
     else:
         receber_sr(servidor, endereco_cliente, sessao, info)
 
+    # imprime os metadados
     print(f"[servidor] DADOS de {endereco_cliente} | seq={info['seq']} | "
           f"checksum={info['checksum']} | valido={info['checksum_valido']} | "
           f"payload={info['payload']!r}")
