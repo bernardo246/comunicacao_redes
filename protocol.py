@@ -83,10 +83,24 @@ def montar_pacote_data(seq,payload):
     pacote= montar_pacote(TYPE_DATA,seq,checksum,payload)
     return pacote
 
+def montar_pacote_fim(seq):
+    """Pacote de payload vazio que sinaliza o fim da mensagem; entra na fila como um DATA qualquer."""
+    checksum = calcular_checksum(ALGORITMO_CHECKSUM_PADRAO, "")
+    return montar_pacote(TYPE_FIM, seq, checksum, "")
+
+def montar_pacotes_mensagem(texto):
+    """Fragmenta o texto e devolve a lista de pacotes, com o pacote FIM na última posição."""
+    pacotes = []
+    for seq, pedaco in enumerate(fragmentar_texto(texto)):
+        pacotes.append(montar_pacote_data(seq, pedaco))
+    pacotes.append(montar_pacote_fim(len(pacotes)))
+    return pacotes
+
 def parsear_pacote_data(pacote_bruto):
     pacote = parsear_pacote(pacote_bruto)
     checksum_esperado = calcular_checksum(ALGORITMO_CHECKSUM_PADRAO, pacote["payload"])
     pacote["checksum_valido"] = (checksum_esperado == pacote["checksum"])
+    pacote["ultimo"] = (pacote["tipo"] == TYPE_FIM)  # sinal de fim de mensagem para o server/client
     return pacote
 
 def montar_ack(seq):

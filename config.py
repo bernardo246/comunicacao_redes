@@ -18,6 +18,7 @@ DELIM_PAYLOAD =","
 
 TYPE_DATA="MSG"
 TYPE_DATA_ACK="MSGACK"
+TYPE_FIM="MSGFIM"         # ultimo pacote da mensagem (payload vazio), sinaliza o fim
 
 TYPE_HANDSHAKE_REQ = "HS"
 TYPE_HANDSHAKE_ACK = "HSACK"
