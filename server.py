@@ -94,6 +94,11 @@ def tratar_handshake(servidor, endereco_cliente, info, sessoes):
         return
 
     parametros, motivo = validar_parametros(info)
+    
+    # parametros invalidos recusa o handshake 
+    if parametros is None:
+        print(f"[servidor] HS de {endereco_cliente} recusado: {motivo}")
+        return
 
     # monta e envia o hsack para o cliente com os parametros acietos
     ack = responder_handshake(servidor, endereco_cliente, parametros)
