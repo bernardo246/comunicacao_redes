@@ -203,13 +203,16 @@ def tratar_dados(servidor, endereco_cliente, info, sessoes):
 # junta os payloads mostra a mensagem completa
 def finalizar_mensagem(endereco_cliente, sessao):
     texto = "".join(sessao["recebidos"])
-    limite = sessao["parametros"]["tamanho_max_texto"]
 
     print(f"[servidor] MENSAGEM COMPLETA de {endereco_cliente} "
-          f"({len(sessao['recebidos'])} pacotes, {len(texto)} caracteres): {texto!r}")
+          f"({sessao['seq_final']} pacotes, {len(texto)} caracteres): {texto!r}")
 
-    # prepara a sessao para a proxima mensagem
+    # prepara a sessao para a proxima mensagem (o seq recomeça em 0)
     sessao["recebidos"] = []
+    sessao["buffer"] = {}
+    sessao["seq_esperado"] = 0
+    sessao["base"] = 0
+    sessao["seq_final"] = None
 
 def encerrar_servidor(servidor):
     servidor.close()
