@@ -175,11 +175,12 @@ def receber_sr(servidor, endereco_cliente, sessao, info):
             
 def tratar_dados(servidor, endereco_cliente, info, sessoes):
     sessao = sessoes.get(endereco_cliente) # procura a sessao do cliente no dicionario
-    if sessao is None:     # sem sessao sem handshake previo, descarte
+
+    if sessao is None:  # sem sessao sem handshake previo descarte
         print(f"[servidor] MSG de {endereco_cliente} sem handshake previo, descartado")
         return
 
-    # consulta o modo se foi gbn ou sr
+    # consulta o modo gbn ou sr
     if sessao["parametros"]["modo_retransmissao"] == config.GBN:
         receber_gbn(servidor, endereco_cliente, sessao, info)
     else:
@@ -189,6 +190,15 @@ def tratar_dados(servidor, endereco_cliente, info, sessoes):
     print(f"[servidor] DADOS de {endereco_cliente} | seq={info['seq']} | "
           f"checksum={info['checksum']} | valido={info['checksum_valido']} | "
           f"payload={info['payload']!r}")
+
+    # verifica se a mensagem esta completa
+    if sessao["parametros"]["modo_retransmissao"] == config.GBN:
+        proximo = sessao["seq_esperado"] # GBN proximo seq que o servidor espera
+    else:
+        proximo = sessao["base"] # SR primeiro seq que ainda nao foi entregue
+
+    if sessao["seq_final"] is not None and proximo > sessao["seq_final"]:
+        finalizar_mensagem(endereco_cliente, sessao)
 
 # junta os payloads mostra a mensagem completa
 def finalizar_mensagem(endereco_cliente, sessao):
