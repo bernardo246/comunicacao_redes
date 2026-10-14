@@ -37,16 +37,15 @@ def processar_pacotes(pacote_str):
         if not checksum_confere(base): # recalcula o checksum e compara
             return {"tipo": tipo, "checksum_valido": False}
 
-        info = protocol.parsear_handshake(pacote_str) #checksum ok, chama o parse especifico
+        info = protocol.parsear_handshake(pacote_str) #checksum certo chama o parse especifico
         info["checksum_valido"] = True  
         return info
 
-    # não é handhake confere se é um pacote de dados
-    if tipo == config.TYPE_DATA:
+    # não é handhake ve se é um pacote de dados
+    if tipo in (config.TYPE_DATA, config.TYPE_FIM):
         return protocol.parsear_pacote_data(pacote_str)
 
-    return {"tipo": tipo}  
-
+    return {"tipo": tipo}
 def validar_parametros(dados):
     if dados["modo_retransmissao"] not in (config.GBN, config.SR): #  so preve esses 2 GBN, SR
         return None, f"modo de retransmissao invalido: {dados['modo_retransmissao']}"
@@ -120,6 +119,8 @@ def receber_gbn(servidor, endereco_cliente, sessao, info):
     # se tiver valido tanto o pacote quanto a ordem
     if info["checksum_valido"] and seq == sessao["seq_esperado"]:
         sessao["recebidos"].append(info["payload"])   
+        if info["ultimo"]:                             # o FIM foi aceito em ordem mensagem termina neste seq
+            sessao["seq_final"] = seq
         enviar_ack(servidor, endereco_cliente, seq)  
         sessao["seq_esperado"] += 1                    
         return
@@ -149,8 +150,10 @@ def receber_sr(servidor, endereco_cliente, sessao, info):
     # verifica se está na dentro da janela
     if base <= seq < base + janela:
         enviar_ack(servidor, endereco_cliente, seq)       
-        if seq not in sessao["buffer"]:                 # guarda no buffer  
+        if seq not in sessao["buffer"]:   # guarda no buffer  
             sessao["buffer"][seq] = info["payload"]
+            if info["ultimo"]:   #  guarda o seq_final
+                sessao["seq_final"] = seq
 
         #deslizamento da janela, perguntando se o pacote do inicio ja chegou (enquanti for sim)
         while sessao["base"] in sessao["buffer"]:
@@ -232,7 +235,7 @@ def main():
             if info["tipo"] == config.TYPE_HANDSHAKE_REQ:
                 tratar_handshake(servidor, endereco_cliente, info, sessoes)
 
-            elif info["tipo"] == config.TYPE_DATA:
+            elif info["tipo"] in (config.TYPE_DATA, config.TYPE_FIM):
                 tratar_dados(servidor, endereco_cliente, info, sessoes)
             else:
                 print(f"[servidor] tipo nao esperado: {info['tipo']}, descartado")
