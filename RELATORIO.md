@@ -105,9 +105,35 @@ exceções por datagrama e segue atendendo.
 
 ### 2.6 Temporizador e retransmissão (lado cliente)
 
-O cliente usa `settimeout(5)` e reenvia o `HS` até **5 vezes**. Se as 5 tentativas
+O cliente espera **1 s** por resposta (`TIMEOUT_ENVIO` no `config.py`, aplicado com
+`settimeout`) e reenvia o `HS` até **5 vezes**. Se as 5 tentativas
 expirarem, ele informa o erro e sai com código 1. É a primeira das características de
 transporte confiável exigidas pela tabela 3.1 do livro a aparecer no código.
+
+O limite de tentativas é a constante `MAX_TENTATIVAS_ENVIO` do `config.py` (padrão `5`).
+Ela define quantas vezes o cliente manda **o mesmo pacote** sem receber resposta antes de
+desistir, e vale para dois momentos:
+
+| Momento | Pacote reenviado | Resposta esperada |
+| :--- | :--- | :--- |
+| Handshake | `HS` | `HSACK` |
+| Envio de dados | cada `MSG`, um de cada vez | `MSGACK` com o mesmo `seq` |
+
+A contagem é **por pacote**: zera toda vez que um ACK chega. No envio de dados, uma
+espera sem resposta acontece quando o tempo limite estoura ou quando o Windows devolve
+`ConnectionResetError` (servidor fora do ar). Um `MSGACK` com `seq` diferente do esperado
+(ACK repetido de um pacote anterior) é descartado e o cliente continua esperando, mas
+**sem renovar o prazo** (ver 2.8). Para mudar o limite, basta trocar o valor no
+`config.py`, sem mexer no `client.py`.
+
+O tempo de espera `TIMEOUT_ENVIO` era 5 s e foi reduzido para **1 s**. Como cliente e
+servidor rodam na mesma máquina, a resposta chega em milissegundos; com 5 s, cada perda
+deixava o envio parado por 5 s antes de reenviar. No pior caso, o cliente desiste de um
+pacote depois de `TIMEOUT_ENVIO × MAX_TENTATIVAS_ENVIO` = 1 × 5 = **5 s**. Se o servidor
+estiver em outra máquina, com uma rede mais lenta, vale aumentar esse valor: um timeout
+menor que o tempo de ida e volta faz o cliente retransmitir pacotes que não se perderam.
+Se um ACK chegar atrasado, depois do reenvio, ele é aceito normalmente, e o ACK
+duplicado que vem depois é ignorado por ter o `seq` antigo.
 
 ### 2.7 Máquina de estados (FSM) do handshake
 
@@ -124,14 +150,47 @@ CLIENTE                                  SERVIDOR
   timeout: reenvia HS (ate 5x) -> se estourar, [FALHA]
 ```
 
+### 2.8 Recepção segura no cliente
+
+Toda resposta que o cliente espera, tanto o `HSACK` quanto cada `MSGACK`, passa por uma
+única função, `receber_resposta(sock, tipo, seq)`. Ela devolve o pacote só se ele passar
+por **todas** as regras abaixo, na ordem. Qualquer outra coisa é descartada com uma linha
+`Descartado: ...` e o cliente continua esperando dentro do mesmo prazo:
+
+| # | Regra | O que barra |
+| :--- | :--- | :--- |
+| 1 | O datagrama cabe em `TAM_RECV` | datagrama gigante (`OSError` 10040 no Windows) |
+| 2 | Veio do endereço do servidor (`HOST`, `PORTA`) | pacote forjado por outro programa ou outra porta |
+| 3 | Decodifica em UTF-8 e tem os 4 campos, com `seq` e `checksum` numéricos | lixo, bytes binários, pacote incompleto |
+| 4 | O checksum bate com o payload | pacote corrompido no caminho |
+| 5 | O tipo e o `seq` são os esperados | ACK repetido, ACK de outro pacote, tipo trocado |
+
+**Prazo fixo.** O tempo de espera é calculado uma vez (`agora + TIMEOUT_ENVIO`), e cada
+`recvfrom` usa só o que sobrou. Sem isso, um servidor que mandasse pacotes errados sem
+parar renovaria o timeout a cada pacote e o cliente ficaria preso para sempre (teste E7).
+
+**Conferência do `HSACK`.** Depois de passar pelas 5 regras, o `HSACK` ainda é conferido
+por `validar_hsack`:
+- o modo e o tipo de envio precisam ser os que o cliente propôs;
+- o tamanho máximo precisa ser ≥ `MIN_TEXTO`;
+- a janela precisa estar entre `JANELA_MIN` e `JANELA_MAX` (1 a 5).
+
+Se o `HSACK` tiver checksum certo mas campos faltando, ou se a conferência falhar, o
+cliente encerra com `Erro: HSACK malformado` ou `Erro: HSACK recusado: ...` e código 1.
+Ele não tenta de novo, porque o servidor mandaria a mesma resposta.
+
+**Saídas controladas.** Todo erro fatal passa por `encerrar_com_erro`, que imprime o
+motivo, fecha o socket e chama `sys.exit(1)`. O `exit()` usado antes só existe no console
+interativo do Python e não deve ser usado em script.
+
 ---
 
 ## 3. Cobertura da tabela 3.1 (transporte confiável)
 
 | Mecanismo | Situação no Checkpoint 1 |
 | :--- | :--- |
-| Soma de verificação | Calculada e transmitida em todo pacote. **Ainda não é conferida** no destino (previsto para o CP2/CP3). |
-| Temporizador | Implementado no cliente (5 s, 5 tentativas). |
+| Soma de verificação | Calculada e transmitida em todo pacote. Conferida pelo servidor (`HS` e dados) e pelo cliente (`HSACK` e `MSGACK`); pacote com checksum errado é descartado. |
+| Temporizador | Implementado no cliente (`TIMEOUT_ENVIO` = 1 s, `MAX_TENTATIVAS_ENVIO` = 5 tentativas por pacote). |
 | Número de sequência | Campo existe no cabeçalho; vale `0` no handshake. Uso real no CP2. |
 | Reconhecimento positivo | `HSACK` confirma o handshake. `ACK` de dados no CP2. |
 | Reconhecimento negativo | Ainda não implementado (CP2/CP3). |
@@ -188,7 +247,7 @@ entre máquinas diferentes, basta trocar o `HOST` para o IP do servidor.
 
 ## 5. Testes
 
-Os testes estão separados em quatro blocos, do mais simples para o mais completo. A ideia
+Os testes estão separados em cinco blocos, do mais simples para o mais completo. A ideia
 é que cada bloco responda uma pergunta diferente.
 
 ### Bloco A — o protocolo sozinho
@@ -205,7 +264,9 @@ payload que contém o próprio delimitador `|`, que é onde o parsing costuma qu
 Sobe o `server.py` e o `client.py` de verdade e faz os dois conversarem via UDP. Cobre o
 handshake completo, vários clientes em sequência, o cliente escolhendo os parâmetros pela
 linha de comando, a validação desses parâmetros antes do envio e o comportamento quando
-não há servidor no ar (as 5 retransmissões).
+não há servidor no ar (as 5 retransmissões). Cobre também o envio de uma mensagem, com
+cada pacote confirmado antes do próximo (B6), uma mensagem com `|` e acentos (B7) e a
+recusa de mensagens vazias, longas demais ou com caracteres que não viram UTF-8 (B8, B9).
 
 **Pergunta que responde:** o que foi combinado no protocolo funciona pela rede?
 
@@ -227,13 +288,32 @@ exceção, e quem decide o que fazer com ela é o `server.py`.
 
 **Pergunta que responde:** o que exatamente acontece quando um pacote chega quebrado?
 
+### Bloco E — o cliente diante de um servidor que se comporta mal
+
+É o espelho do bloco C, do lado do cliente. O `testes.py` roda o cliente dentro do
+próprio processo, apontado para um **servidor falso** na porta 5001. Esse servidor faz de
+propósito o que um servidor real não deveria fazer:
+- perde um pacote;
+- nunca confirma;
+- manda ACK velho, com checksum errado ou vindo de outra porta;
+- manda lixo e um datagrama de 2000 bytes;
+- inunda o cliente de ACK errado;
+- responde um `HSACK` com janela 9, modo trocado, checksum errado ou campos faltando.
+
+Verifica que o cliente descarta o que é inválido, retransmite quando precisa, recusa
+o handshake quando o servidor não confirma o combinado e, quando desiste, sai com
+mensagem clara e código 1, nunca com traceback e nunca travado. Cada caso está descrito
+no [README.md](README.md).
+
+**Pergunta que responde:** o cliente aguenta um servidor (ou uma rede) que se comporta mal?
+
 ### Como rodar
 
 Tudo de uma vez, com o script subindo e derrubando o servidor sozinho:
 
 ```bash
 python3 testes.py                 # todos os blocos
-python3 testes.py --completo      # inclui o B4, que leva ~25s
+python3 testes.py --completo      # inclui o B4, que leva ~5s
 python3 testes.py A               # so um bloco
 python3 testes.py C1              # so um teste
 python3 testes.py --silencioso    # so o veredito, sem a saida de cada teste
@@ -279,9 +359,28 @@ verificados neste checkpoint:
    *Correção:* documentação alinhada ao código — o algoritmo é fixo (ASCII).
 5. **Comportamento do cliente sem servidor difere por sistema operacional.** No Windows,
    enviar UDP para porta fechada gera ICMP *port unreachable* → `ConnectionResetError`,
-   que o cliente **não** trata, e o laço de retransmissão não chega a rodar. No Linux, o
-   mesmo cenário caiu em `socket.timeout` e as 5 retransmissões aconteceram normalmente.
-   *Pendência assumida:* tratar `ConnectionResetError` junto com `socket.timeout`.
+   que o cliente **não** tratava, e o laço de retransmissão não chegava a rodar. No Linux,
+   o mesmo cenário caiu em `socket.timeout` e as 5 retransmissões aconteceram normalmente.
+   *Correção:* `ConnectionResetError` passou a ser tratado como "sem resposta", junto com o
+   timeout, no handshake e no envio de dados (testes B4 e E12).
+6. **Cliente quebrava com qualquer resposta inesperada.** Uma resposta `LIXO`, bytes que
+   não são UTF-8 ou um `seq` não numérico derrubavam o cliente com `ValueError` ou
+   `UnicodeDecodeError`. No Windows, um datagrama maior que 1024 bytes derrubava com
+   `OSError [WinError 10040]`.
+   *Correção:* `receber_resposta` descarta o datagrama e continua esperando (teste E5).
+7. **Cliente aceitava qualquer coisa que parecesse um ACK.** Não conferia o checksum do
+   ACK nem do `HSACK`, não conferia quem tinha mandado o pacote e aceitava um `HSACK` com
+   janela fora de 1–5 ou com um modo diferente do pedido.
+   *Correção:* as regras da seção 2.8 e `validar_hsack` (testes E4, E6, E8–E11).
+8. **Pacotes errados prendiam o cliente para sempre.** Cada `recvfrom` reiniciava o
+   timeout, então um servidor mandando ACK errado sem parar impedia o cliente de desistir.
+   *Correção:* prazo fixo por espera, calculado uma vez (teste E7).
+9. **Testes desatualizados em relação ao código.** O A1 rodava um auto-teste que tinha sido
+   removido do `protocol.py`. O C5 esperava que o servidor ignorasse o checksum, mas o
+   servidor já o conferia. No Windows, o `testes.py` quebrava ao encerrar o servidor
+   (`SIGINT` não existe para outro processo) e deixava o servidor rodando na porta 5000.
+   *Correção:* A1 refeito sem depender do auto-teste, C5 atualizado para esperar o
+   descarte, e o servidor encerrado com `terminate()` no Windows.
 
 
 
@@ -289,11 +388,11 @@ verificados neste checkpoint:
 
 | Item | Checkpoint previsto |
 | :--- | :--- |
-| Checksum é enviado mas não conferido no destino | CP2/CP3 |
-| Fragmentação do texto em payloads de no máximo 4 caracteres (`MAX_PAYLOAD`) | CP2 |
-| Uso efetivo do número de sequência e da janela (GBN e SR) | CP2 |
-| `ACK` / `NACK` de dados e impressão dos metadados no servidor | CP2 |
+| Cliente ainda não envia o `MSGFIM`, então o servidor não chega a montar a mensagem completa | CP2 |
+| Cliente envia um pacote por vez (espera o ACK antes do próximo); a janela negociada ainda não é usada | CP2 |
+| Uso efetivo do número de sequência e da janela (GBN e SR) no envio | CP2 |
+| `LOTE` e `IND` são aceitos, mas ainda não mudam o comportamento do envio | CP2 |
+| `NACK` de dados | CP2/CP3 |
 | Inserção determinística de erros e perdas pelo cliente | CP3 |
-| Cliente não trata `ConnectionResetError` (Windows, servidor fora do ar) | CP2 |
-| Cliente não confere o checksum do `HSACK` nem valida se a janela está entre 1 e 5 | CP2 |
 | `VERSAO_PROTOCOLO` declarada mas ainda não usada no cabeçalho | CP2 |
+| O checksum cobre só o payload: um `seq` ou `tipo` corrompido no caminho não é detectado | CP3 |

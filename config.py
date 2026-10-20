@@ -38,6 +38,17 @@ JANELA_MIN = 1
 JANELA_MAX = 5
 JANELA_INICIAL = 5        # valor inicial determinado pelo servidor
 
+# ---------------------------------------------------------------- retransmissao (cliente)
+# Quantas vezes o cliente envia o mesmo pacote sem receber resposta antes de desistir.
+# Vale para o HS (esperando o HSACK) e para cada pacote de dados (esperando o MSGACK).
+# A contagem e por pacote: zera sempre que um ACK chega.
+MAX_TENTATIVAS_ENVIO = 5
+
+# Tempo (em segundos) que o cliente espera a resposta de um pacote antes de reenviar.
+# Em localhost a resposta chega em milissegundos, entao 1s ja e folga de sobra.
+# Entre maquinas diferentes, aumentar se aparecerem retransmissoes sem perda real.
+TIMEOUT_ENVIO = 1
+
 # ---------------------------------------------------------------- handshake
 
 # valores possiveis para o modo de retransmissao
