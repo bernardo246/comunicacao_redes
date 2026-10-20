@@ -68,12 +68,12 @@ avulsos que rodam direto no terminal e mostram o resultado na hora.
 
 - Rode sempre **de dentro da pasta do projeto** (onde estão `protocol.py`, `client.py` etc.).
 - Os comandos funcionam igual no **PowerShell**, no **Git Bash** e no Linux.
-- Os grupos **A** e **D** não precisam de servidor. Os grupos **B** e **C** precisam de
+- Os grupos **A**, **D** e **E** não precisam de servidor. Os grupos **B** e **C** precisam de
   **dois terminais abertos**: um rodando o servidor, outro rodando o comando.
 
 ### O que cada bloco testa
 
-Os testes estão divididos em quatro blocos, do mais simples para o mais completo:
+Os testes estão divididos em cinco blocos, do mais simples para o mais completo:
 
 | Bloco | O que testa | Precisa de servidor? |
 | :--- | :--- | :--- |
@@ -81,10 +81,12 @@ Os testes estão divididos em quatro blocos, do mais simples para o mais complet
 | **B** | O handshake acontecendo de verdade pela rede, entre `client.py` e `server.py` via UDP. É o caminho feliz do checkpoint 1. | Sim |
 | **C** | O servidor recebendo coisa errada: parâmetro fora do permitido, tipo inesperado, pacote lixo. Mostra que ele valida e não cai. | Sim |
 | **D** | Pacotes malformados entregues direto ao `protocol.py`. Documenta qual exceção cada defeito gera, sem rede no meio. | Não |
+| **E** | O cliente contra um **servidor falso** que se comporta mal de propósito: perde pacote, manda lixo, mente no `HSACK`, inunda de ACK errado. Mostra que o cliente não cai nem trava. | Não (o servidor falso sobe sozinho na porta 5001) |
 
 Resumindo: **A** prova que o protocolo está certo, **B** prova que ele funciona pela
-rede, **C** prova que o servidor aguenta entrada errada e **D** mostra o que acontece
-quando um pacote chega quebrado.
+rede, **C** prova que o servidor aguenta entrada errada, **D** mostra o que acontece
+quando um pacote chega quebrado e **E** prova que o cliente aguenta um servidor que se
+comporta mal.
 
 ### Rodando tudo de uma vez: `testes.py`
 
@@ -93,7 +95,7 @@ resultado com o esperado e imprime `[OK]` / `[FALHOU]` no fim, junto do log do s
 
 ```bash
 python3 testes.py                 # todos os testes (menos o B4, que e lento)
-python3 testes.py --completo      # inclui o B4 (~25s a mais)
+python3 testes.py --completo      # inclui o B4 (~5s a mais)
 python3 testes.py A               # so o grupo A
 python3 testes.py C1 C4           # so os testes escolhidos
 python3 testes.py --silencioso    # so o veredito de cada teste, sem a saida
@@ -119,15 +121,19 @@ python server.py
 
 Testam só a montagem/leitura dos pacotes. Não envolvem socket nenhum.
 
-**A1 — Auto-teste embutido do `protocol.py`**
+**A1 — HS e HSACK montados e lidos de volta**
 *Verifica:* que HS e HSACK são montados e desmontados sem perder nada.
 
 ```powershell
-python protocol.py
+python -c "import protocol; p=protocol.montar_handshake_request('GBN','LOTE',50); r=protocol.montar_handshake_ack('GBN','LOTE',50,5); print(p); print(protocol.parsear_handshake(p)); print(r); print(protocol.parsear_handshake(r))"
 ```
 
 Esperado: os pacotes `HS|0|712|GBN,LOTE,50` e `HSACK|0|809|GBN,LOTE,50,5`, cada um
 seguido do dicionário com os campos separados.
+
+> Antes este teste era `python protocol.py`, que rodava um auto-teste embutido. Esse
+> bloco foi removido do `protocol.py` (commit `1515879`), então a conferência passou para
+> o próprio comando acima e para o `testes.py`.
 
 **A2 — Checksum com valor conhecido**
 *Verifica:* a soma ASCII está correta. `A`=65, `B`=66, `C`=67 → 198.
@@ -251,6 +257,44 @@ python client.py --modo XPTO
 Esperado: `client.py: error: --texto deve ser no minimo 30 (recebido 5)` e, no segundo,
 o erro de `choices` do argparse. Nenhum datagrama chega ao servidor.
 
+**B6 — Mensagem enviada e confirmada**
+*Verifica:* a mensagem é quebrada em pedaços de até 4 caracteres e cada um só é enviado
+depois que o anterior foi confirmado.
+
+```powershell
+python client.py "ola servidor"
+```
+
+Esperado: `Pacote enviado: MSG|0|348|ola `, `MSG|1|448|serv`, `MSG|2|430|idor`, cada um
+seguido de `ACK do seq=N recebido`. No Terminal 1, uma linha `DADOS ... valido=True`
+para cada pacote.
+
+**B7 — Mensagem com `|` e acento**
+*Verifica:* o delimitador do pacote e caracteres de 2 bytes em UTF-8 chegam intactos.
+
+```powershell
+python client.py "a|b é ç"
+```
+
+Esperado: `ACK do seq=0 recebido` e `ACK do seq=1 recebido`. No Terminal 1, os payloads
+`'a|b '` e `'é ç'`, ambos com `valido=True`.
+
+**B8 — Mensagem inválida na linha de comando**
+*Verifica:* o cliente barra a mensagem antes de mandar qualquer coisa na rede.
+
+```powershell
+python client.py ""
+python client.py "1234567890123456789012345678901"
+```
+
+Esperado: `client.py: error: a mensagem nao pode ser vazia` e
+`client.py: error: a mensagem tem 31 caracteres, acima do limite de 30 (use --texto para aumentar)`.
+
+**B9 — Mensagem com caractere que não vira UTF-8**
+*Verifica:* um caractere inválido vindo do terminal (no Windows, um *surrogate* como
+`\udcff`) é barrado com erro claro, em vez de quebrar no `encode` na hora do envio. Esse
+caso é difícil de digitar no terminal, então só roda pelo `testes.py B9`.
+
 **B4 — Cliente SEM servidor rodando**
 *Verifica:* o que acontece quando ninguém responde. **Feche o Terminal 1 antes** (`Ctrl+C`).
 
@@ -258,16 +302,16 @@ o erro de `choices` do argparse. Nenhum datagrama chega ao servidor.
 python client.py
 ```
 
-Esperado **no Windows**: `ConnectionResetError: [WinError 10054]`.
-Esperado **no Linux**: as 5 tentativas de retransmissão (`Tentativa 1..5: tempo limite
-excedido`) e depois `Erro: número máximo de tentativas de handshake excedido.`
+Esperado (Windows e Linux): as 5 tentativas (`Tentativa 1..5: sem resposta valida do
+servidor`) e depois `Erro: número máximo de tentativas de handshake excedido.`, sem
+traceback.
 
 > Detalhe importante: ao mandar UDP para uma porta fechada no próprio computador, o
 > Windows devolve um ICMP *port unreachable*, que vira `ConnectionResetError` — e **não**
-> `socket.timeout`. Como o `client.py` só trata `except socket.timeout`, o laço de 5
-> retransmissões **não** é acionado nesse caso: o programa quebra na primeira tentativa.
-> No Linux o mesmo cenário cai em `socket.timeout` e a retransmissão acontece
-> normalmente. Tratar `ConnectionResetError` junto com o timeout ficou como pendência.
+> `socket.timeout`. Antes o cliente só tratava o timeout e quebrava na primeira
+> tentativa. Agora os dois casos são tratados como "sem resposta"; no Windows as
+> tentativas acontecem quase na hora (o erro chega na hora), no Linux cada uma espera
+> o `TIMEOUT_ENVIO`.
 
 ---
 
@@ -318,15 +362,16 @@ Esperado no Terminal 1: `pacote malformado, descartado: not enough values to unp
 e `datagrama nao decodificavel, descartado: 'utf-8' codec can't decode byte 0xff...`.
 Rode `python client.py` em seguida: o servidor continua respondendo normalmente.
 
-**C5 — Checksum é enviado mas nunca conferido**
-*Deveria:* detectar que o checksum (`1`) não bate com o payload. *Hoje:* responde normalmente.
-Fica para o checkpoint 2/3.
+**C5 — HS com checksum errado é descartado**
+*Verifica:* o servidor recalcula o checksum e descarta o `HS` cujo checksum (`1`) não
+bate com o payload.
 
 ```powershell
 python -c "import socket,protocol,config; s=socket.socket(socket.AF_INET,socket.SOCK_DGRAM); s.settimeout(3); s.sendto(protocol.montar_pacote('HS',0,1,'GBN,LOTE,30').encode(),(config.HOST,config.PORTA)); print(s.recvfrom(1024)[0].decode())"
 ```
 
-Resultado atual: `HSACK|0|807|GBN,LOTE,30,5` — o pacote corrompido passou.
+Esperado: `TimeoutError` no Terminal 2 e `HS de ... com checksum invalido, descartado` no
+Terminal 1. (No checkpoint 1 o checksum não era conferido e este pacote recebia `HSACK`.)
 
 ---
 
@@ -348,12 +393,37 @@ nenhum deles é tratado no código.
 
 ---
 
+### Grupo E — Robustez do cliente (servidor falso)
+
+Estes testes só rodam pelo `testes.py` (`python testes.py E`). O cliente roda dentro do
+próprio script, apontado para um **servidor falso** na porta `5001` que responde o que o
+teste mandar. Não precisa do `server.py` no ar. Para deixar os testes de desistência
+rápidos, alguns usam 2 tentativas em vez de 5.
+
+| Teste | O servidor falso... | O cliente deve... |
+| :--- | :--- | :--- |
+| **E1** | some com a 1ª cópia do `seq=1` | reenviar o `seq=1` uma vez e terminar a mensagem |
+| **E2** | nunca confirma dados | desistir depois das tentativas e sair com código 1 |
+| **E3** | manda o ACK do pacote anterior antes do certo | ignorar o ACK velho, sem retransmitir |
+| **E4** | manda um `MSGACK` com checksum errado | descartar o ACK e reenviar o pacote |
+| **E5** | manda `LIXO`, bytes não-UTF-8, `seq` não numérico e um datagrama de 2000 bytes | descartar os quatro e seguir |
+| **E6** | deixa outro socket (outra porta) mandar o ACK | descartar o ACK de quem não é o servidor |
+| **E7** | manda ACK errado a cada 50 ms, sem parar | desistir no prazo, sem ficar preso esperando |
+| **E8** | responde `HSACK` com janela 9 | recusar o handshake (janela fora de 1 a 5) |
+| **E9** | responde `SR` quando o cliente pediu `GBN` | recusar o handshake |
+| **E10** | responde `HSACK` com checksum errado | descartar e reenviar o `HS` |
+| **E11** | responde `HSACK` com checksum certo, mas sem os campos de tamanho e janela | encerrar com `HSACK malformado`, sem traceback |
+| **E12** | não existe (ninguém na porta) | esgotar as tentativas e sair sem traceback |
+
+---
+
 ### Resumo do que os testes cobrem
 
 O grupo **A** cobre a montagem e leitura dos pacotes e o cálculo do checksum; o **B**
 cobre o handshake completo entre `client.py` e `server.py` via UDP, incluindo a escolha
-de parâmetros pela linha de comando, vários clientes em sequência e o comportamento sem
-servidor no ar; o **C** cobre a validação dos parâmetros e a robustez do servidor diante
-de pacotes inválidos (e registra a verificação de checksum como pendência do próximo
-checkpoint); o **D** documenta o que cada pacote malformado provoca em `protocol.py`,
-fora da rede.
+de parâmetros pela linha de comando, vários clientes em sequência, o envio de uma
+mensagem com confirmação de cada pacote e o comportamento sem servidor no ar; o **C**
+cobre a validação dos parâmetros e a robustez do servidor diante de pacotes inválidos,
+inclusive checksum errado; o **D** documenta o que cada pacote malformado provoca em
+`protocol.py`, fora da rede; o **E** cobre a robustez do cliente diante de um servidor que
+perde pacotes, manda lixo ou mente no handshake.

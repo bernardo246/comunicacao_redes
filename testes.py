@@ -1,15 +1,20 @@
 import argparse
+import contextlib
+import io
 import signal
 import socket
 import subprocess
 import sys
+import threading
 import time
 
+import client
 import config
 import protocol
 
 PYTHON = sys.executable
 LARGURA = 62
+PORTA_FALSA = config.PORTA + 1   # porta do servidor falso do grupo E, para nao brigar com o server.py
 
 
 def executar_python(argumentos, timeout=45):
@@ -43,6 +48,13 @@ def capturar_erro(funcao):
     return "nenhuma excecao levantada"
 
 
+def parar_servidor(processo):
+    if sys.platform == "win32":
+        processo.terminate()   # o Windows nao entrega SIGINT para outro processo (ValueError: Unsupported signal)
+    else:
+        processo.send_signal(signal.SIGINT)
+
+
 def porta_ocupada():
     sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
     try:
@@ -56,9 +68,16 @@ def porta_ocupada():
 
 # ---------------------------------------------------------------- grupo A
 def a1():
-    saida = executar_python(["protocol.py"])
-    ok = "HS|0|712|GBN,LOTE,50" in saida and "HSACK|0|809|GBN,LOTE,50,5" in saida
-    return ok, saida, "HS|0|712|GBN,LOTE,50 e HSACK|0|809|GBN,LOTE,50,5 na saida"
+    # antes rodava o auto-teste do protocol.py, que foi removido no commit 1515879; agora faz a mesma conferencia aqui
+    pedido = protocol.montar_handshake_request(config.GBN, config.MODO_LOTE, 50)
+    resposta = protocol.montar_handshake_ack(config.GBN, config.MODO_LOTE, 50, 5)
+    lido_pedido = protocol.parsear_handshake(pedido)
+    lido_resposta = protocol.parsear_handshake(resposta)
+    ok = (pedido == "HS|0|712|GBN,LOTE,50"
+          and resposta == "HSACK|0|809|GBN,LOTE,50,5"
+          and lido_pedido["tamanho_max_texto"] == 50
+          and lido_resposta["tamanho_janela"] == 5)
+    return ok, f"{pedido}\n{lido_pedido}\n{resposta}\n{lido_resposta}", "HS|0|712|GBN,LOTE,50 e HSACK|0|809|GBN,LOTE,50,5, lidos de volta sem perda"
 
 
 def a2():
@@ -152,6 +171,48 @@ def b4():
     return ok, saida, "5 tentativas de retransmissao e depois a mensagem de erro"
 
 
+def b6():
+    saida = executar_python(["client.py", "ola servidor"])
+    ok = ("Pacote enviado: MSG|0|348|ola " in saida
+          and "ACK do seq=2 recebido" in saida
+          and "Erro" not in saida)
+    return ok, saida, "3 fragmentos enviados e os 3 confirmados (ACK do seq=0, 1 e 2)"
+
+
+def b7():
+    # '|' e o delimitador do pacote e 'é' ocupa 2 bytes em UTF-8: os dois precisam chegar intactos
+    saida = executar_python(["client.py", "a|b é ç"])
+    ok = "ACK do seq=1 recebido" in saida and "Erro" not in saida
+    return ok, saida, "'a|b ' e 'é ç' confirmados pelo servidor"
+
+
+def b8():
+    vazia = executar_python(["client.py", ""])
+    longa = executar_python(["client.py", "x" * 31])
+    ok = ("a mensagem nao pode ser vazia" in vazia
+          and "a mensagem tem 31 caracteres, acima do limite de 30" in longa)
+    resumo = f"{vazia.splitlines()[-1]}\n{longa.splitlines()[-1]}"
+    return ok, resumo, "mensagem vazia e mensagem acima de --texto barradas antes da rede"
+
+
+def b9():
+    # \udcff e o que o Windows entrega quando o terminal manda um byte que nao e texto valido
+    erro = io.StringIO()
+    argv_original = sys.argv
+    sys.argv = ["client.py", "ola \udcff"]
+    try:
+        with contextlib.redirect_stderr(erro):
+            client.ler_argumentos()
+        codigo = 0
+    except SystemExit as saida:
+        codigo = saida.code
+    finally:
+        sys.argv = argv_original
+    obtido = erro.getvalue().strip().splitlines()[-1] if erro.getvalue().strip() else "(nenhum erro)"
+    ok = codigo == 2 and "nao podem ser codificados" in obtido
+    return ok, obtido, "erro do argparse: caracteres que nao podem ser codificados em utf-8"
+
+
 # ---------------------------------------------------------------- grupo C
 def c1():
     obtido = enviar_bruto(protocol.montar_handshake_request(config.GBN, config.MODO_LOTE, 5))
@@ -180,9 +241,9 @@ def c4():
 
 
 def c5():
+    # o servidor passou a conferir o checksum do HS: checksum 1 nao bate com o payload, entao nao ha resposta
     obtido = enviar_bruto(protocol.montar_pacote(config.TYPE_HANDSHAKE_REQ, 0, 1, "GBN,LOTE,30"))
-    ok = obtido == "HSACK|0|807|GBN,LOTE,30,5"
-    return ok, obtido, "HSACK|0|807|GBN,LOTE,30,5 (checksum ainda nao e conferido)"
+    return obtido.startswith("SEM RESPOSTA"), obtido, "SEM RESPOSTA (timeout): HS com checksum errado descartado"
 
 
 # ---------------------------------------------------------------- grupo D
@@ -211,8 +272,237 @@ def d5():
     return obtido.startswith("ValueError: Algoritmo de checksum"), obtido, "ValueError: Algoritmo de checksum nao suportado"
 
 
+# ---------------------------------------------------------------- grupo E
+# O cliente roda dentro deste processo, apontado para um servidor falso na PORTA_FALSA.
+# O servidor falso responde o que cada teste mandar: perder pacote, mandar lixo, mentir no HSACK...
+class ServidorFalso:
+    def __init__(self, responder):
+        self.responder = responder    # funcao(pacote, endereco, falso) -> lista do que mandar de volta
+        self.recebidos = []           # tudo o que o cliente mandou, na ordem
+        self.ativo = True
+        self.sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+        self.sock.bind((config.HOST, PORTA_FALSA))
+        self.sock.settimeout(0.1)
+        self.thread = threading.Thread(target=self.rodar, daemon=True)
+
+    def rodar(self):
+        while self.ativo:
+            try:
+                dados, endereco = self.sock.recvfrom(4096)
+            except (socket.timeout, OSError):
+                continue
+            texto = dados.decode(config.ENCODING)
+            self.recebidos.append(texto)
+            for resposta in self.responder(protocol.parsear_pacote(texto), endereco, self):
+                if isinstance(resposta, str):
+                    resposta = resposta.encode(config.ENCODING)
+                self.sock.sendto(resposta, endereco)
+
+    def dados(self):
+        return [pacote for pacote in self.recebidos if pacote.startswith(config.TYPE_DATA + "|")]
+
+    def __enter__(self):
+        self.thread.start()
+        return self
+
+    def __exit__(self, *erro):
+        self.ativo = False
+        self.thread.join()
+        self.sock.close()
+
+
+def responder_padrao(pacote, endereco, falso):
+    if pacote["tipo"] == config.TYPE_HANDSHAKE_REQ:
+        return [protocol.montar_handshake_ack(config.GBN, config.MODO_LOTE, 30, config.JANELA_INICIAL)]
+    if pacote["tipo"] == config.TYPE_DATA:
+        return [protocol.montar_ack(pacote["seq"])]
+    return []
+
+
+def rodar_cliente(responder, mensagem="ola servidor", tentativas=None):
+    """Faz handshake + envio contra o servidor falso. Devolve (codigo de saida, saida, segundos, servidor falso)."""
+    originais = (client.PORTA, client.MAX_TENTATIVAS_ENVIO)
+    client.PORTA = PORTA_FALSA
+    if tentativas is not None:
+        client.MAX_TENTATIVAS_ENVIO = tentativas   # menos tentativas = teste de desistencia mais rapido
+
+    saida = io.StringIO()
+    codigo = 0
+    inicio = time.monotonic()
+    falso = ServidorFalso(responder) if responder is not None else contextlib.nullcontext()
+    try:
+        with falso, contextlib.redirect_stdout(saida):
+            sock, _ = client.enviar_handshake()
+            if mensagem:
+                client.enviar_mensagem(sock, mensagem)
+            sock.close()
+    except SystemExit as fim:
+        codigo = fim.code
+    finally:
+        client.PORTA, client.MAX_TENTATIVAS_ENVIO = originais
+    return codigo, saida.getvalue().strip(), time.monotonic() - inicio, falso
+
+
+def e1():
+    perdido = []
+    def responder(pacote, endereco, falso):
+        if pacote["tipo"] == config.TYPE_DATA and pacote["seq"] == 1 and not perdido:
+            perdido.append(1)
+            return []   # some com a primeira copia do seq=1
+        return responder_padrao(pacote, endereco, falso)
+
+    codigo, saida, _, falso = rodar_cliente(responder)
+    esperado = ["MSG|0|348|ola ", "MSG|1|448|serv", "MSG|1|448|serv", "MSG|2|430|idor"]
+    ok = codigo == 0 and falso.dados() == esperado
+    return ok, saida, f"seq=1 reenviado uma vez e mensagem concluida: {esperado}"
+
+
+def e2():
+    def responder(pacote, endereco, falso):
+        if pacote["tipo"] == config.TYPE_DATA:
+            return []   # nunca confirma dados
+        return responder_padrao(pacote, endereco, falso)
+
+    codigo, saida, segundos, falso = rodar_cliente(responder, tentativas=2)
+    ok = (codigo == 1
+          and "o seq=0 nao foi confirmado depois de 2 tentativas" in saida
+          and len(falso.dados()) == 2)
+    return ok, f"{saida}\n(codigo {codigo}, {segundos:.1f}s)", "desiste do seq=0 depois de 2 envios e sai com codigo 1"
+
+
+def e3():
+    def responder(pacote, endereco, falso):
+        if pacote["tipo"] == config.TYPE_DATA and pacote["seq"] > 0:
+            return [protocol.montar_ack(pacote["seq"] - 1), protocol.montar_ack(pacote["seq"])]   # ACK velho antes do certo
+        return responder_padrao(pacote, endereco, falso)
+
+    codigo, saida, _, falso = rodar_cliente(responder)
+    ok = codigo == 0 and "Descartado: nao e o esperado: MSGACK|0|0|" in saida and len(falso.dados()) == 3
+    return ok, saida, "ACK repetido descartado, sem retransmissao (3 pacotes de dados)"
+
+
+def e4():
+    corrompido = []
+    def responder(pacote, endereco, falso):
+        if pacote["tipo"] == config.TYPE_DATA and not corrompido:
+            corrompido.append(1)
+            return [protocol.montar_pacote(config.TYPE_DATA_ACK, 0, 999, "")]   # checksum de payload vazio e 0, nao 999
+        return responder_padrao(pacote, endereco, falso)
+
+    codigo, saida, _, falso = rodar_cliente(responder)
+    ok = codigo == 0 and "Descartado: checksum invalido: MSGACK|0|999|" in saida and len(falso.dados()) == 4
+    return ok, saida, "ACK com checksum errado descartado e seq=0 reenviado"
+
+
+def e5():
+    enviado = []
+    def responder(pacote, endereco, falso):
+        if pacote["tipo"] == config.TYPE_DATA and not enviado:
+            enviado.append(1)
+            lixo = [b"LIXO", bytes([0xFF, 0xFE]), "MSGACK|abc|0|", b"X" * 2000]
+            return lixo + [protocol.montar_ack(pacote["seq"])]
+        return responder_padrao(pacote, endereco, falso)
+
+    codigo, saida, _, falso = rodar_cliente(responder)
+    ok = codigo == 0 and saida.count("Descartado") >= 4 and len(falso.dados()) == 3
+    return ok, saida, "4 respostas lixo descartadas (texto, nao-UTF-8, seq invalido, 2000 bytes) e mensagem concluida"
+
+
+def e6():
+    intruso = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+    forjado = []
+    def responder(pacote, endereco, falso):
+        if pacote["tipo"] == config.TYPE_DATA and not forjado:
+            forjado.append(1)
+            intruso.sendto(protocol.montar_ack(0).encode(config.ENCODING), endereco)   # ACK certo, mas de outra porta
+            return []
+        return responder_padrao(pacote, endereco, falso)
+
+    try:
+        codigo, saida, _, falso = rodar_cliente(responder)
+    finally:
+        intruso.close()
+    ok = codigo == 0 and "que nao e o servidor" in saida and len(falso.dados()) == 4
+    return ok, saida, "ACK vindo de outro endereco descartado e seq=0 reenviado"
+
+
+def e7():
+    parar = threading.Event()
+    def inundar(sock, endereco):
+        while not parar.is_set():
+            try:
+                sock.sendto(protocol.montar_ack(99).encode(config.ENCODING), endereco)
+            except OSError:
+                return
+            time.sleep(0.05)
+
+    def responder(pacote, endereco, falso):
+        if pacote["tipo"] == config.TYPE_DATA:
+            if pacote["seq"] == 0 and len(falso.dados()) == 1:
+                threading.Thread(target=inundar, args=(falso.sock, endereco), daemon=True).start()
+            return []   # nunca confirma; so chega ACK errado, sem parar
+        return responder_padrao(pacote, endereco, falso)
+
+    try:
+        codigo, saida, segundos, _ = rodar_cliente(responder, tentativas=2)
+    finally:
+        parar.set()
+    limite = 2 * config.TIMEOUT_ENVIO + 1.5
+    ok = codigo == 1 and segundos < limite
+    resumo = f"{saida.splitlines()[-1]}\n(codigo {codigo}, {segundos:.1f}s, {saida.count('Descartado')} ACKs errados descartados)"
+    return ok, resumo, f"desiste em menos de {limite:.1f}s mesmo recebendo ACK errado a cada 50ms"
+
+
+def responder_hsack(hsack):
+    def responder(pacote, endereco, falso):
+        if pacote["tipo"] == config.TYPE_HANDSHAKE_REQ:
+            return [hsack]
+        return responder_padrao(pacote, endereco, falso)
+    return responder
+
+
+def e8():
+    codigo, saida, _, _ = rodar_cliente(responder_hsack(protocol.montar_handshake_ack(config.GBN, config.MODO_LOTE, 30, 9)))
+    ok = codigo == 1 and "janela 9 fora da faixa 1 a 5" in saida
+    return ok, saida, "HSACK com janela 9 recusado, codigo 1"
+
+
+def e9():
+    codigo, saida, _, _ = rodar_cliente(responder_hsack(protocol.montar_handshake_ack(config.SR, config.MODO_LOTE, 30, 5)))
+    ok = codigo == 1 and "modo SR diferente do proposto (GBN)" in saida
+    return ok, saida, "HSACK com modo diferente do pedido recusado, codigo 1"
+
+
+def e10():
+    corrompido = []
+    def responder(pacote, endereco, falso):
+        if pacote["tipo"] == config.TYPE_HANDSHAKE_REQ and not corrompido:
+            corrompido.append(1)
+            return [protocol.montar_pacote(config.TYPE_HANDSHAKE_ACK, 0, 1, "GBN,LOTE,30,5")]
+        return responder_padrao(pacote, endereco, falso)
+
+    codigo, saida, _, falso = rodar_cliente(responder, mensagem=None)
+    pedidos = [pacote for pacote in falso.recebidos if pacote.startswith("HS|")]
+    ok = codigo == 0 and "Descartado: checksum invalido: HSACK|0|1|" in saida and len(pedidos) == 2
+    return ok, saida, "HSACK com checksum errado descartado e HS reenviado"
+
+
+def e11():
+    payload = "GBN,LOTE"   # falta tamanho e janela
+    hsack = protocol.montar_pacote(config.TYPE_HANDSHAKE_ACK, 0, protocol.calcular_checksum(config.CHECKSUM_ASCII, payload), payload)
+    codigo, saida, _, _ = rodar_cliente(responder_hsack(hsack))
+    ok = codigo == 1 and "HSACK malformado" in saida
+    return ok, saida, "HSACK com checksum certo mas campos faltando: erro claro, codigo 1"
+
+
+def e12():
+    codigo, saida, segundos, _ = rodar_cliente(None, tentativas=2)   # ninguem escutando na PORTA_FALSA
+    ok = codigo == 1 and "número máximo de tentativas de handshake excedido" in saida
+    return ok, f"{saida}\n(codigo {codigo}, {segundos:.1f}s)", "sem traceback: 2 tentativas e erro de handshake, codigo 1"
+
+
 TESTES = [
-    ("A1", "auto-teste embutido do protocol.py", a1, False, False),
+    ("A1", "HS e HSACK montados e lidos de volta", a1, False, False),
     ("A2", "checksum ASCII de 'ABC'", a2, False, False),
     ("A3", "checksum de payload vazio", a3, False, False),
     ("A4", "ida e volta de um pacote", a4, False, False),
@@ -223,17 +513,33 @@ TESTES = [
     ("B2", "varios clientes em sequencia", b2, True, False),
     ("B3", "cliente escolhendo SR, IND e 77", b3, True, False),
     ("B5", "parametros invalidos barrados no cliente", b5, False, False),
-    ("B4", "cliente sem servidor no ar (lento, ~25s)", b4, False, True),
+    ("B6", "mensagem enviada e confirmada pelo servidor", b6, True, False),
+    ("B7", "mensagem com '|' e acento chega intacta", b7, True, False),
+    ("B8", "mensagem vazia ou longa barrada no cliente", b8, False, False),
+    ("B9", "mensagem com caractere invalido barrada", b9, False, False),
+    ("B4", "cliente sem servidor no ar (~5s)", b4, False, True),
     ("C1", "tamanho abaixo do minimo corrigido para 30", c1, True, False),
     ("C2", "modo e tipo de envio invalidos recusados", c2, True, False),
     ("C3", "pacote de tipo inesperado descartado", c3, True, False),
     ("C4", "pacote lixo nao derruba o servidor", c4, True, False),
-    ("C5", "checksum enviado mas ainda nao conferido", c5, True, False),
+    ("C5", "HS com checksum errado descartado", c5, True, False),
     ("D1", "faltam campos no pacote", d1, False, False),
     ("D2", "seq nao numerico", d2, False, False),
     ("D3", "HSACK sem a janela", d3, False, False),
     ("D4", "payload de handshake incompleto", d4, False, False),
     ("D5", "algoritmo de checksum inexistente", d5, False, False),
+    ("E1", "pacote de dados perdido e reenviado", e1, False, False),
+    ("E2", "servidor nunca confirma: cliente desiste", e2, False, False),
+    ("E3", "ACK repetido de pacote anterior ignorado", e3, False, False),
+    ("E4", "ACK com checksum errado descartado", e4, False, False),
+    ("E5", "respostas lixo nao derrubam o cliente", e5, False, False),
+    ("E6", "ACK vindo de outro endereco descartado", e6, False, False),
+    ("E7", "enxurrada de ACK errado nao prende o cliente", e7, False, False),
+    ("E8", "HSACK com janela fora de 1 a 5 recusado", e8, False, False),
+    ("E9", "HSACK com modo diferente do pedido recusado", e9, False, False),
+    ("E10", "HSACK com checksum errado descartado", e10, False, False),
+    ("E11", "HSACK malformado encerra com erro claro", e11, False, False),
+    ("E12", "handshake sem servidor sai sem traceback", e12, False, False),
 ]
 
 TITULOS = {
@@ -241,6 +547,7 @@ TITULOS = {
     "B": "GRUPO B - handshake completo pela rede",
     "C": "GRUPO C - validacao e robustez do servidor",
     "D": "GRUPO D - pacotes malformados (sem rede)",
+    "E": "GRUPO E - robustez do cliente (servidor falso)",
 }
 
 
@@ -315,7 +622,7 @@ def main():
                     print(f"{identificador}  {titulo:<48} [PULADO]")
                     continue
                 if servidor is not None:
-                    servidor.send_signal(signal.SIGINT)
+                    parar_servidor(servidor)
                     servidor.wait(timeout=5)
 
             try:
@@ -346,7 +653,7 @@ def main():
     finally:
         log = ""
         if servidor is not None and servidor.poll() is None:
-            servidor.send_signal(signal.SIGINT)
+            parar_servidor(servidor)
             try:
                 log = servidor.communicate(timeout=5)[0]
             except subprocess.TimeoutExpired:
