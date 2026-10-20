@@ -162,11 +162,24 @@ python3 client.py --modo SR --envio IND --texto 77
 python3 client.py --help
 ```
 
-| Flag | Valores | Default |
+**Cliente informando a mensagem (primeiro argumento):**
+
+```bash
+python3 client.py "ola servidor"
+python3 client.py "uma mensagem bem maior que trinta caracteres" --texto 50 --modo SR
+```
+
+| Argumento | Valores | Default |
 | :--- | :--- | :--- |
+| `mensagem` (posicional, 1º argumento) | texto entre aspas, de 1 até `--texto` caracteres | nenhuma (só faz o handshake) |
 | `--modo` | `GBN`, `SR` | `GBN` |
 | `--envio` | `LOTE`, `IND` | `LOTE` |
 | `--texto` | inteiro ≥ 30 | `30` |
+
+A mensagem é validada antes de qualquer envio: vazia ou maior que `--texto` faz o
+cliente encerrar com erro do `argparse`, sem mandar nada para a rede. Como o servidor
+só ajusta o `tamanho_max_texto` para cima (mínimo 30), uma mensagem que cabe no valor
+proposto sempre cabe no valor confirmado no `HSACK`.
 
 Host e porta ficam em `config.py` (`HOST = "127.0.0.1"`, `PORTA = 5000`); para rodar
 entre máquinas diferentes, basta trocar o `HOST` para o IP do servidor.
