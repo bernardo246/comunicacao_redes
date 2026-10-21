@@ -14,7 +14,7 @@ import socket
 import sys
 import time
 from config import *
-from protocol import montar_handshake_request, parsear_handshake, fragmentar_texto, montar_pacote_data, parsear_pacote, calcular_checksum
+from protocol import montar_handshake_request, parsear_handshake, parsear_pacote, calcular_checksum
 from protocol import montar_pacotes_mensagem
 
 """
@@ -142,13 +142,13 @@ def receber_resposta(sock, tipo_esperado, seqs_esperados, espera=TIMEOUT_ENVIO):
 
 
 def enviar_individual(sock, mensagem):
-    fragmentos = fragmentar_texto(mensagem) # quebra a mensagem em pedacos de ate 4 caracteres
-    print("Fragmentos da mensagem:", fragmentos)
+    pacotes = montar_pacotes_mensagem(mensagem) # pedacos de 4 caracteres e o MSGFIM no final
+    print("Pacotes da mensagem:", pacotes)
 
-    indice = 0 # posicao do fragmento atual na lista, e tambem o seq do pacote
+    indice = 0 # posicao do pacote atual na lista, e tambem o seq dele
     tentativas = 0
-    while indice < len(fragmentos): # so passa para o proximo fragmento quando o atual for confirmado
-        pacote = montar_pacote_data(indice, fragmentos[indice]) # coloca o cabecalho tipo|seq|checksum na frente do fragmento
+    while indice < len(pacotes): # so passa para o proximo pacote quando o atual for confirmado
+        pacote = pacotes[indice]
         sock.sendto(pacote.encode(ENCODING), (HOST, PORTA)) # mesmo socket do handshake, para o servidor achar a sessao
         print("Pacote enviado:", pacote)
 
