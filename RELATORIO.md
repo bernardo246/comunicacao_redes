@@ -1,7 +1,8 @@
 # Relatório — Trabalho I (Comunicação e Redes)
 
 > Documento incremental: evolui a cada checkpoint, conforme exigido na especificação.
-> **Status atual: Checkpoint 1 — Handshake & Sockets (entrega em 09/09/2026).**
+> **Status atual: Checkpoint 2 — Transmissão de dados (fragmentação, ACK, janela GBN e SR).**
+> Checkpoint 1 — Handshake & Sockets: entregue em 09/09/2026.
 
 ---
 
@@ -19,10 +20,10 @@ Arquivos:
 | Arquivo | Responsabilidade |
 | :--- | :--- |
 | `config.py` | Constantes de configuração (rede, protocolo, limites, defaults). Sem números mágicos espalhados. |
-| `protocol.py` | Regras do protocolo: montagem/parsing de pacotes, checksum e mensagens de handshake. Não conhece socket. |
-| `server.py` | Socket do servidor, recepção, validação dos parâmetros e resposta do handshake. |
-| `client.py` | Socket do cliente, proposta do handshake, temporizador e retransmissão. |
-| `testes.py` | Bateria de testes: sobe o servidor, roda os quatro grupos e confere os resultados. |
+| `protocol.py` | Regras do protocolo: montagem/parsing de pacotes, checksum, mensagens de handshake, fragmentação da mensagem e pacotes de dados, fim e ACK. Não conhece socket. |
+| `server.py` | Socket do servidor: handshake, uma sessão por cliente, recepção dos dados em GBN ou SR, envio dos ACKs e montagem da mensagem completa. |
+| `client.py` | Socket do cliente: handshake, recepção segura das respostas e envio da mensagem em três modos (individual, GBN e SR), com temporizador e retransmissão. |
+| `testes.py` | Bateria de testes: sobe o servidor, roda os cinco grupos e confere os resultados. |
 
 A separação `protocol.py` (regras) × `client/server.py` (rede) é proposital: permite
 testar o protocolo inteiro sem subir socket nenhum (grupos A e D dos testes no README).
@@ -41,8 +42,8 @@ tipo|seq|checksum|payload
 
 | Campo | Descrição |
 | :--- | :--- |
-| `tipo` | Natureza do pacote: `HS`, `HSACK` (e, a partir do CP2, `DATA`, `ACK`, `NACK`). |
-| `seq` | Número de sequência. No handshake é sempre `0`. |
+| `tipo` | Natureza do pacote: `HS`, `HSACK` (handshake) e, a partir do CP2, `MSG`, `MSGFIM` e `MSGACK` (dados; ver 2.9). |
+| `seq` | Número de sequência. No handshake é sempre `0`; nos dados, começa em `0` a cada mensagem. |
 | `checksum` | Soma dos códigos ASCII dos caracteres do **payload**. |
 | `payload` | Conteúdo específico do tipo de pacote. |
 
@@ -117,9 +118,12 @@ desistir, e vale para dois momentos:
 | Momento | Pacote reenviado | Resposta esperada |
 | :--- | :--- | :--- |
 | Handshake | `HS` | `HSACK` |
-| Envio de dados | cada `MSG`, um de cada vez | `MSGACK` com o mesmo `seq` |
+| Envio individual | o `MSG`/`MSGFIM` atual | `MSGACK` com o mesmo `seq` |
+| Envio GBN | a janela inteira, a partir da base | `MSGACK` de qualquer pacote em voo (cumulativo) |
+| Envio SR | só o pacote cujo timer estourou | `MSGACK` daquele pacote |
 
-A contagem é **por pacote**: zera toda vez que um ACK chega. No envio de dados, uma
+A contagem é **por pacote**: zera toda vez que um ACK chega. No GBN, quem conta é o
+pacote da base; no SR, cada pacote tem a sua contagem. No envio de dados, uma
 espera sem resposta acontece quando o tempo limite estoura ou quando o Windows devolve
 `ConnectionResetError` (servidor fora do ar). Um `MSGACK` com `seq` diferente do esperado
 (ACK repetido de um pacote anterior) é descartado e o cliente continua esperando, mas
@@ -153,7 +157,11 @@ CLIENTE                                  SERVIDOR
 ### 2.8 Recepção segura no cliente
 
 Toda resposta que o cliente espera, tanto o `HSACK` quanto cada `MSGACK`, passa por uma
-única função, `receber_resposta(sock, tipo, seq)`. Ela devolve o pacote só se ele passar
+única função, `receber_resposta(sock, tipo, seqs_esperados, espera)`. O parâmetro
+`seqs_esperados` é a lista dos seqs aceitos (`[0]` no handshake, `[seq]` no envio
+individual, `range(base, proximo)` no GBN, a lista de pendentes no SR) e `espera` é o tempo
+máximo (padrão `TIMEOUT_ENVIO`; o SR passa o que falta para o timer mais antigo estourar).
+Ela devolve o pacote só se ele passar
 por **todas** as regras abaixo, na ordem. Qualquer outra coisa é descartada com uma linha
 `Descartado: ...` e o cliente continua esperando dentro do mesmo prazo:
 
@@ -163,9 +171,9 @@ por **todas** as regras abaixo, na ordem. Qualquer outra coisa é descartada com
 | 2 | Veio do endereço do servidor (`HOST`, `PORTA`) | pacote forjado por outro programa ou outra porta |
 | 3 | Decodifica em UTF-8 e tem os 4 campos, com `seq` e `checksum` numéricos | lixo, bytes binários, pacote incompleto |
 | 4 | O checksum bate com o payload | pacote corrompido no caminho |
-| 5 | O tipo e o `seq` são os esperados | ACK repetido, ACK de outro pacote, tipo trocado |
+| 5 | O tipo é o esperado e o `seq` está entre os esperados | ACK repetido, ACK de outro pacote, tipo trocado |
 
-**Prazo fixo.** O tempo de espera é calculado uma vez (`agora + TIMEOUT_ENVIO`), e cada
+**Prazo fixo.** O tempo de espera é calculado uma vez (`agora + espera`), e cada
 `recvfrom` usa só o que sobrou. Sem isso, um servidor que mandasse pacotes errados sem
 parar renovaria o timeout a cada pacote e o cliente ficaria preso para sempre (teste E7).
 
@@ -183,18 +191,105 @@ Ele não tenta de novo, porque o servidor mandaria a mesma resposta.
 motivo, fecha o socket e chama `sys.exit(1)`. O `exit()` usado antes só existe no console
 interativo do Python e não deve ser usado em script.
 
+### 2.9 Transmissão de dados (Checkpoint 2)
+
+Depois do handshake, o cliente envia a mensagem usando três tipos de pacote novos:
+
+| Tipo | Quem manda | Formato | Para que serve |
+| :--- | :--- | :--- | :--- |
+| `MSG` | cliente | `MSG\|<seq>\|<checksum>\|<até 4 caracteres>` | um pedaço da mensagem |
+| `MSGFIM` | cliente | `MSGFIM\|<seq>\|0\|` (payload vazio) | marca o fim da mensagem; é sempre o último pacote |
+| `MSGACK` | servidor | `MSGACK\|<seq>\|0\|` (payload vazio) | confirma o pacote de dados `seq` |
+
+(Nas tabelas, o `|` aparece como `\|` por causa da formatação do Markdown.)
+
+**Fragmentação.** O texto é quebrado em pedaços de no máximo `MAX_PAYLOAD = 4`
+caracteres, e cada pedaço vira um `MSG` com seq a partir de `0`. No fim entra o `MSGFIM`,
+com o seq seguinte. Quem faz isso é `montar_pacotes_mensagem` do `protocol.py`, usada
+pelos três modos de envio do cliente. Exemplo para `"ola servidor"`:
+
+```
+MSG|0|348|ola    MSG|1|448|serv    MSG|2|430|idor    MSGFIM|3|0|
+```
+
+O `MSGFIM` é enviado, confirmado e retransmitido como qualquer outro pacote. Quando o
+servidor o recebe em ordem, junta os pedaços e imprime a mensagem completa:
+
+```
+[servidor] MENSAGEM COMPLETA de ('127.0.0.1', 55709) (3 pacotes, 12 caracteres): 'ola servidor'
+```
+
+### 2.10 Envio no cliente: individual, GBN e SR
+
+O cliente escolhe a forma de envio a partir da `config_sessao`, o dicionário com o que o
+servidor **confirmou** no `HSACK`, e não a partir dos argumentos digitados:
+
+| `tipo_envio` | `modo_retransmissao` | Função | Comportamento |
+| :--- | :--- | :--- | :--- |
+| `IND` | qualquer | `enviar_individual` | um pacote por vez: só manda o próximo depois do ACK do atual |
+| `LOTE` | `GBN` | `enviar_gbn` | até `tamanho_janela` pacotes em voo, ACK cumulativo, um timer só |
+| `LOTE` | `SR` | `enviar_sr` | até `tamanho_janela` pacotes em voo, ACK individual, um timer por pacote |
+
+A janela é definida pelo servidor no `HSACK` (hoje, `JANELA_INICIAL = 5`).
+
+**Go-Back-N (`enviar_gbn`).** O cliente guarda `base` (o primeiro pacote ainda não
+confirmado) e `proximo` (o próximo ainda não enviado). A cada volta:
+1. manda todos os pacotes que cabem na janela, de `proximo` até `base + janela - 1`;
+2. espera o ACK de qualquer pacote em voo (`range(base, proximo)`);
+3. ACK do seq `n`: como o ACK é cumulativo, tudo até `n` está confirmado, então
+   `base = n + 1` e a janela anda;
+4. timeout: `proximo = base`, e a próxima volta reenvia a janela inteira a partir da base.
+
+**Repetição Seletiva (`enviar_sr`).** Além de `base` e `proximo`, o cliente guarda a
+lista `confirmados` (seqs com ACK, mesmo fora de ordem), o dicionário `hora_envio` (o
+timer de cada pacote) e o dicionário `tentativas` (por pacote). A cada volta:
+1. manda o que cabe na janela e arma o timer de cada pacote enviado;
+2. monta a lista de pendentes (enviados e sem ACK) e espera só até o timer mais antigo
+   deles estourar;
+3. ACK do seq `n`: marca só o `n` como confirmado. A janela só anda quando a **base** é
+   confirmada, e então pula todos os já confirmados logo depois dela;
+4. reenvia **só** os pacotes cujo timer estourou, e rearma só o timer deles.
+
+**Exemplo com o seq 1 perdido** (`"ola servidor"`, 4 pacotes, janela 5):
+
+| | GBN | SR |
+| :--- | :--- | :--- |
+| Envio inicial | 0, 1, 2, 3 | 0, 1, 2, 3 |
+| O servidor responde | ACK 0, e repete ACK 0 para o 2 e o 3 (fora de ordem) | ACK 0, ACK 2, ACK 3 |
+| Depois do timeout | reenvia **1, 2 e 3** | reenvia **só o 1** |
+
+Esses dois cenários são testados no `testes.py` (E14 e E17).
+
+### 2.11 Recepção no servidor
+
+O servidor guarda uma sessão por cliente (endereço IP e porta), criada no handshake. Os
+dados de quem não fez handshake são descartados. Cada pacote recebido tem os metadados
+impressos (`seq`, `checksum`, se é válido e o payload), e a recepção segue o modo da
+sessão:
+
+- **GBN (`receber_gbn`):** aceita só o pacote com o seq esperado e checksum válido, e
+  responde o `MSGACK` dele. Pacote fora de ordem ou corrompido é descartado, e o servidor
+  repete o ACK do último pacote aceito em ordem. Não há buffer.
+- **SR (`receber_sr`):** pacote com checksum inválido é descartado sem ACK. Pacote dentro
+  da janela `[base, base + janela)` recebe ACK individual e vai para um buffer; quando o
+  pacote da base chega, o servidor entrega em ordem tudo o que estava no buffer e a janela
+  anda. Pacote da janela anterior (duplicado) recebe o ACK de novo.
+
+Quando o `MSGFIM` é entregue em ordem, `finalizar_mensagem` junta os payloads, imprime
+`MENSAGEM COMPLETA` e zera a sessão, para a próxima mensagem começar no seq `0`.
+
 ---
 
 ## 3. Cobertura da tabela 3.1 (transporte confiável)
 
-| Mecanismo | Situação no Checkpoint 1 |
+| Mecanismo | Situação no Checkpoint 2 |
 | :--- | :--- |
 | Soma de verificação | Calculada e transmitida em todo pacote. Conferida pelo servidor (`HS` e dados) e pelo cliente (`HSACK` e `MSGACK`); pacote com checksum errado é descartado. |
-| Temporizador | Implementado no cliente (`TIMEOUT_ENVIO` = 1 s, `MAX_TENTATIVAS_ENVIO` = 5 tentativas por pacote). |
-| Número de sequência | Campo existe no cabeçalho; vale `0` no handshake. Uso real no CP2. |
-| Reconhecimento positivo | `HSACK` confirma o handshake. `ACK` de dados no CP2. |
-| Reconhecimento negativo | Ainda não implementado (CP2/CP3). |
-| Janela / paralelismo | Negociada (1–5, inicial 5). O uso efetivo da janela é do CP2. |
+| Temporizador | No cliente (`TIMEOUT_ENVIO` = 1 s, `MAX_TENTATIVAS_ENVIO` = 5 tentativas por pacote): um timer no envio individual e no GBN, um timer por pacote no SR. |
+| Número de sequência | Usado nos dados: começa em `0` a cada mensagem, ordena os pacotes no servidor e identifica qual pacote cada ACK confirma. |
+| Reconhecimento positivo | `HSACK` confirma o handshake; `MSGACK` confirma cada pacote de dados (cumulativo no GBN, individual no SR). |
+| Reconhecimento negativo | Ainda não implementado: um pacote corrompido é descartado e recuperado pelo timeout do cliente. |
+| Janela / paralelismo | Definida pelo servidor no `HSACK` (1–5, inicial 5) e usada no envio GBN e SR: até `tamanho_janela` pacotes em voo. |
 
 ---
 
@@ -228,6 +323,17 @@ python3 client.py "ola servidor"
 python3 client.py "uma mensagem bem maior que trinta caracteres" --texto 50 --modo SR
 ```
 
+**Os três modos de envio:**
+
+```bash
+python3 client.py "redes de computadores e legal!" --envio IND   # individual
+python3 client.py "redes de computadores e legal!" --modo GBN    # janela Go-Back-N (padrao)
+python3 client.py "redes de computadores e legal!" --modo SR     # janela Repeticao Seletiva
+```
+
+No terminal do servidor, cada envio termina com
+`MENSAGEM COMPLETA ... 'redes de computadores e legal!'`.
+
 | Argumento | Valores | Default |
 | :--- | :--- | :--- |
 | `mensagem` (posicional, 1º argumento) | texto entre aspas, de 1 até `--texto` caracteres | nenhuma (só faz o handshake) |
@@ -259,14 +365,16 @@ payload que contém o próprio delimitador `|`, que é onde o parsing costuma qu
 
 **Pergunta que responde:** o protocolo, no papel, está certo?
 
-### Bloco B — o handshake pela rede
+### Bloco B — o handshake e o envio pela rede
 
 Sobe o `server.py` e o `client.py` de verdade e faz os dois conversarem via UDP. Cobre o
 handshake completo, vários clientes em sequência, o cliente escolhendo os parâmetros pela
 linha de comando, a validação desses parâmetros antes do envio e o comportamento quando
-não há servidor no ar (as 5 retransmissões). Cobre também o envio de uma mensagem, com
-cada pacote confirmado antes do próximo (B6), uma mensagem com `|` e acentos (B7) e a
-recusa de mensagens vazias, longas demais ou com caracteres que não viram UTF-8 (B8, B9).
+não há servidor no ar (as 5 retransmissões). Cobre também o envio da mensagem nos três
+modos: GBN, que é o padrão (B6); individual (B10); SR (B11). Inclui uma mensagem com `|` e
+acentos (B7), a recusa de mensagens vazias, longas demais ou com caracteres que não viram
+UTF-8 (B8, B9), e a conferência, no log do servidor, de que ele montou a mensagem completa
+nos três modos (B12).
 
 **Pergunta que responde:** o que foi combinado no protocolo funciona pela rede?
 
@@ -302,8 +410,15 @@ propósito o que um servidor real não deveria fazer:
 
 Verifica que o cliente descarta o que é inválido, retransmite quando precisa, recusa
 o handshake quando o servidor não confirma o combinado e, quando desiste, sai com
-mensagem clara e código 1, nunca com traceback e nunca travado. Cada caso está descrito
-no [README.md](README.md).
+mensagem clara e código 1, nunca com traceback e nunca travado.
+
+Os testes E13 a E19 usam o mesmo servidor falso para conferir a janela:
+- GBN: manda só o que cabe na janela, volta e reenvia a partir do pacote perdido, e trata
+  o ACK como cumulativo;
+- SR: manda só o que cabe na janela, reenvia só o pacote perdido, não anda a janela com o
+  ACK de um pacote do meio, e desiste de um pacote pelo timer individual dele.
+
+Cada caso está descrito no [README.md](README.md).
 
 **Pergunta que responde:** o cliente aguenta um servidor (ou uma rede) que se comporta mal?
 
@@ -320,7 +435,9 @@ python3 testes.py --silencioso    # so o veredito, sem a saida de cada teste
 ```
 
 O script compara cada resultado com o esperado, imprime `[OK]`/`[FALHOU]` e, no fim,
-mostra o log do servidor. Se já houver um servidor rodando na porta 5000, ele usa esse.
+mostra o log do servidor. Se já houver um servidor rodando na porta 5000, ele usa esse, e
+o B4 e o B12 são pulados (o B4 precisa da porta livre, e o B12 precisa ler o log do
+servidor que o próprio script subiu).
 
 Para rodar um teste por vez na mão, os comandos de cada um estão no [README.md](README.md).
 
@@ -382,17 +499,41 @@ verificados neste checkpoint:
    *Correção:* A1 refeito sem depender do auto-teste, C5 atualizado para esperar o
    descarte, e o servidor encerrado com `terminate()` no Windows.
 
+Casos encontrados no Checkpoint 2:
+
+10. **Envio individual não mandava o `MSGFIM`.** O GBN e o SR montavam os pacotes com
+    `montar_pacotes_mensagem`, que já coloca o `MSGFIM` no fim. O envio individual, mais
+    antigo, montava cada pacote na mão (`fragmentar_texto` + `montar_pacote_data`) e nunca
+    criava o fim. O servidor recebia e confirmava todos os pedaços, mas nunca imprimia a
+    mensagem completa.
+    *Correção:* o envio individual passou a usar a mesma `montar_pacotes_mensagem` do
+    `protocol.py` (testes B10 e B12). Lição: antes de montar algo no cliente, conferir se
+    o `protocol.py` já tem uma função pronta.
+11. **Função renomeada sem atualizar quem a chamava.** `enviar_mensagem` virou
+    `enviar_individual`, mas o `main` e o `testes.py` continuaram chamando o nome antigo,
+    o que daria `NameError` em todo envio que não fosse GBN.
+    *Correção:* as duas chamadas foram atualizadas. Ao renomear, buscar o nome antigo no
+    projeto inteiro.
+12. **Servidor travava no meio da bateria de testes.** O `testes.py` subia o servidor com
+    `stdout=PIPE` e só lia essa saída no fim. Com os testes de envio, o log do servidor
+    passou do tamanho do buffer do pipe, o `print` do servidor bloqueou e ele parou de
+    responder, fazendo testes falharem sem relação com o código testado.
+    *Correção:* uma thread lê a saída do servidor enquanto ele roda (`iniciar_servidor` no
+    `testes.py`). O log passou a incluir também o servidor reiniciado depois do B4.
+
 
 
 ## 7. Limitações conhecidas / próximos passos
 
 | Item | Checkpoint previsto |
 | :--- | :--- |
-| Cliente ainda não envia o `MSGFIM`, então o servidor não chega a montar a mensagem completa | CP2 |
-| Cliente envia um pacote por vez (espera o ACK antes do próximo); a janela negociada ainda não é usada | CP2 |
-| Uso efetivo do número de sequência e da janela (GBN e SR) no envio | CP2 |
-| `LOTE` e `IND` são aceitos, mas ainda não mudam o comportamento do envio | CP2 |
-| `NACK` de dados | CP2/CP3 |
+| `NACK` de dados: hoje um pacote corrompido só é recuperado pelo timeout do cliente | CP2/CP3 (a confirmar no enunciado) |
+| `VERSAO_PROTOCOLO` declarada no `config.py` mas ainda não usada no cabeçalho | CP2 (a confirmar no enunciado) |
 | Inserção determinística de erros e perdas pelo cliente | CP3 |
-| `VERSAO_PROTOCOLO` declarada mas ainda não usada no cabeçalho | CP2 |
+| Se o ACK do `MSGFIM` se perder, o servidor já zerou a sessão. No GBN, o `MSGFIM` reenviado é descartado sem ACK e o cliente desiste com erro, mesmo com a mensagem entregue. No SR, um `MSGFIM` com seq menor que a janela é tratado como pacote de uma mensagem nova. Correção prevista no servidor (ex.: lembrar o seq final da última mensagem e reconfirmar o `MSGFIM` repetido) | CP3 |
 | O checksum cobre só o payload: um `seq` ou `tipo` corrompido no caminho não é detectado | CP3 |
+
+Resolvidos no Checkpoint 2 (estavam nesta tabela no CP1): o cliente envia o `MSGFIM`; o
+número de sequência e a janela são usados no envio GBN e SR; `LOTE` e `IND` mudam o
+comportamento do envio; o checksum é conferido no destino; o cliente trata
+`ConnectionResetError` e confere o `HSACK`.
