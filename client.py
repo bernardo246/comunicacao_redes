@@ -97,19 +97,20 @@ def ler_argumentos():
     return args
 
 
-# espera ate TIMEOUT_ENVIO por um pacote do tipo esperado com o seq dentro de seqs_esperados (ex.: [0] ou range(2, 5)).
+# espera um pacote do tipo esperado com o seq dentro de seqs_esperados (ex.: [0] ou range(2, 5)).
+# espera: quantos segundos esperar (por padrao TIMEOUT_ENVIO).
 # Retorna o pacote (string) ou None se o prazo acabar.
 # Qualquer outra coisa que chegar no meio do caminho e descartada, sem derrubar o cliente.
-def receber_resposta(sock, tipo_esperado, seqs_esperados):
+def receber_resposta(sock, tipo_esperado, seqs_esperados, espera=TIMEOUT_ENVIO):
     servidor = (socket.gethostbyname(HOST), PORTA) # recvfrom devolve o IP, entao compara com o IP do HOST
-    prazo = time.monotonic() + TIMEOUT_ENVIO # prazo fixo: pacotes errados chegando nao renovam o tempo de espera
+    prazo = time.monotonic() + espera # prazo fixo: pacotes errados chegando nao renovam o tempo de espera
 
     while True:
         restante = prazo - time.monotonic()
         if restante <= 0:
             return None
         sock.settimeout(restante)
-
+        # recebendo os dados
         try:
             dados, endereco = sock.recvfrom(TAM_RECV)
         except (socket.timeout, ConnectionResetError): # no Windows, servidor fora do ar vira ConnectionResetError em vez de timeout
@@ -196,6 +197,70 @@ def enviar_gbn(sock, mensagem, janela):
             proximo = base # volta para a base, e o laco de cima reenvia a janela
 
 
+# Repeticao Seletiva: manda varios pacotes de uma vez, ate o tamanho da janela, igual ao GBN.
+# A diferenca: o ACK e individual (o ACK do seq n confirma so o n) e cada pacote tem o seu proprio timer.
+# Se o tempo de um pacote acabar sem ACK, reenvia so ele.
+# a janela so anda quando o primeiro chegar
+def enviar_sr(sock, mensagem, janela):
+    pacotes = montar_pacotes_mensagem(mensagem) # pedacos de 4 caracteres e o MSGFIM no final
+    print("Pacotes da mensagem:", pacotes)
+
+    base = 0         # primeiro pacote que ainda nao foi confirmado
+    proximo = 0      # proximo pacote que ainda nao foi enviado
+    confirmados = [] # seqs que ja receberam ACK, mesmo fora de ordem
+    hora_envio = {}  # seq -> hora do ultimo envio daquele pacote (e o timer dele) [Dicionario]
+    tentativas = {}  # seq -> quantas vezes o tempo daquele pacote acabou
+
+    while base < len(pacotes):
+        # manda todos os pacotes que cabem na janela
+        while proximo < len(pacotes) and proximo < base + janela:
+            sock.sendto(pacotes[proximo].encode(ENCODING), (HOST, PORTA))
+            print("Pacote enviado:", pacotes[proximo])
+            hora_envio[proximo] = time.monotonic()
+            tentativas[proximo] = 0
+            proximo += 1
+
+        # pacotes que ja foram enviados e ainda esperam ACK
+        pendentes = []
+        for seq in range(base, proximo):
+            if seq not in confirmados: # isso tem que ser feito porque o ACK pode chegar fora de ordem, e a janela anda so quando o primeiro pacote dela for confirmado
+                pendentes.append(seq)
+
+        # espera so ate o timer do pacote mais antigo acabar
+        mais_antigo = pendentes[0]
+        for seq in pendentes:
+            if hora_envio[seq] < hora_envio[mais_antigo]:
+                mais_antigo = seq
+        espera = hora_envio[mais_antigo] + TIMEOUT_ENVIO - time.monotonic()
+
+        resposta = receber_resposta(sock, TYPE_DATA_ACK, pendentes, espera) # so aceita ACK de pacotes que ja foram enviados e ainda nao foram confirmados
+
+        if resposta is not None:
+            seq_confirmado = parsear_pacote(resposta)["seq"] 
+            print(f"ACK do seq={seq_confirmado} recebido")
+            confirmados.append(seq_confirmado)
+
+            # a janela so anda quando o primeiro pacote dela for confirmado
+            while base in confirmados:
+                base += 1
+
+        # reenvia so os pacotes cujo tempo acabou
+        agora = time.monotonic()
+        for seq in range(base, proximo):
+            if seq in confirmados:
+                continue
+            if agora - hora_envio[seq] < TIMEOUT_ENVIO:
+                continue
+
+            tentativas[seq] += 1
+            if tentativas[seq] == MAX_TENTATIVAS_ENVIO:
+                encerrar_com_erro(sock, f"o seq={seq} nao foi confirmado depois de {MAX_TENTATIVAS_ENVIO} tentativas.")
+            print(f"Tentativa {tentativas[seq]}: sem ACK do seq={seq}, reenviando so ele...")
+            sock.sendto(pacotes[seq].encode(ENCODING), (HOST, PORTA))
+            print("Pacote enviado:", pacotes[seq])
+            hora_envio[seq] = agora # o timer recomeca so para este pacote
+
+
 def encerrar_com_erro(sock, motivo):
     print("Erro:", motivo)
     sock.close()
@@ -214,10 +279,12 @@ def main():
         if len(args.mensagem) > config_sessao["tamanho_max_texto"]:
             encerrar_com_erro(sock, f"a mensagem passa do tamanho maximo confirmado pelo servidor ({config_sessao['tamanho_max_texto']}).")
 
-        if config_sessao["modo_retransmissao"] == GBN and config_sessao["tipo_envio"] == MODO_LOTE:
+        if config_sessao["tipo_envio"] == MODO_INDIVIDUAL:
+            enviar_individual(sock, args.mensagem)
+        elif config_sessao["modo_retransmissao"] == GBN:
             enviar_gbn(sock, args.mensagem, config_sessao["tamanho_janela"])
         else:
-            enviar_individual(sock, args.mensagem)
+            enviar_sr(sock, args.mensagem, config_sessao["tamanho_janela"])
 
 
     sock.close()
