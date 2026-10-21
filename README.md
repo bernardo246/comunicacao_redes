@@ -33,13 +33,17 @@
 | **Uso da Banda** | Menos eficiente em canais com alta taxa de perdas (desperdício de tráfego). | Mais eficiente em canais com perdas (envia apenas o que é estritamente necessário). |
 
 # variaveis para pacote
-- tipo — O que o pacote é (HS, HSACK, DATA, ACK, NACK).
+- tipo — O que o pacote é: `HS` e `HSACK` (handshake), `MSG` (pedaço da mensagem),
+  `MSGFIM` (fim da mensagem) e `MSGACK` (confirmação de um pacote de dados).
 
 - seq — Qual número de sequência do pacote (pra ordenar e evitar duplicatas).
+  Começa em `0` a cada mensagem.
 
-- checksum — Valor que detecta corrupção (placeholder no checkpoint 1, real no checkpoint 3).
+- checksum — Soma dos códigos ASCII do payload. Calculado em todo pacote e conferido
+  pelos dois lados: pacote com checksum errado é descartado.
 
-- payload — O conteúdo/dado útil (parâmetros da sessão no handshake, dados reais no checkpoint 2).
+- payload — O conteúdo/dado útil (parâmetros da sessão no handshake, até 4 caracteres da
+  mensagem no `MSG`, vazio no `MSGFIM` e no `MSGACK`).
 
 
 # Variáveis de configuração (Handshake)
@@ -78,10 +82,10 @@ Os testes estão divididos em cinco blocos, do mais simples para o mais completo
 | Bloco | O que testa | Precisa de servidor? |
 | :--- | :--- | :--- |
 | **A** | O protocolo sozinho: montar e ler pacote, checksum, HS e HSACK. Só chama as funções do `protocol.py`, sem socket nenhum. | Não |
-| **B** | O handshake acontecendo de verdade pela rede, entre `client.py` e `server.py` via UDP. É o caminho feliz do checkpoint 1. | Sim |
+| **B** | O handshake e o envio da mensagem acontecendo de verdade pela rede, entre `client.py` e `server.py` via UDP, nos três modos de envio (individual, GBN e SR). É o caminho feliz dos checkpoints 1 e 2. | Sim |
 | **C** | O servidor recebendo coisa errada: parâmetro fora do permitido, tipo inesperado, pacote lixo. Mostra que ele valida e não cai. | Sim |
 | **D** | Pacotes malformados entregues direto ao `protocol.py`. Documenta qual exceção cada defeito gera, sem rede no meio. | Não |
-| **E** | O cliente contra um **servidor falso** que se comporta mal de propósito: perde pacote, manda lixo, mente no `HSACK`, inunda de ACK errado. Mostra que o cliente não cai nem trava. | Não (o servidor falso sobe sozinho na porta 5001) |
+| **E** | O cliente contra um **servidor falso** que se comporta mal de propósito: perde pacote, manda lixo, mente no `HSACK`, inunda de ACK errado. Mostra que o cliente não cai nem trava, e que o GBN e o SR reenviam o que devem quando um pacote se perde. | Não (o servidor falso sobe sozinho na porta 5001) |
 
 Resumindo: **A** prova que o protocolo está certo, **B** prova que ele funciona pela
 rede, **C** prova que o servidor aguenta entrada errada, **D** mostra o que acontece
@@ -102,7 +106,8 @@ python3 testes.py --silencioso    # so o veredito de cada teste, sem a saida
 ```
 
 Se ja houver um servidor rodando na porta 5000, o script detecta e usa esse — nesse caso
-o B4 é pulado, porque ele precisa que ninguém esteja escutando.
+o B4 e o B12 são pulados: o B4 precisa que ninguém esteja escutando, e o B12 precisa ler o
+log do servidor, que só está disponível quando é o próprio script que o sobe.
 
 Abaixo, os mesmos testes um a um, para rodar na mão durante a apresentação.
 
@@ -203,7 +208,7 @@ HSACK|0|668|SR,IND,50,3
 
 ---
 
-### Grupo B — Handshake completo pela rede (2 terminais)
+### Grupo B — Handshake e envio pela rede (2 terminais)
 
 Com o `python server.py` rodando no Terminal 1, use o **Terminal 2**:
 
@@ -257,17 +262,18 @@ python client.py --modo XPTO
 Esperado: `client.py: error: --texto deve ser no minimo 30 (recebido 5)` e, no segundo,
 o erro de `choices` do argparse. Nenhum datagrama chega ao servidor.
 
-**B6 — Mensagem enviada e confirmada**
-*Verifica:* a mensagem é quebrada em pedaços de até 4 caracteres e cada um só é enviado
-depois que o anterior foi confirmado.
+**B6 — Mensagem enviada com janela GBN (o padrão)**
+*Verifica:* a mensagem é quebrada em pedaços de até 4 caracteres, ganha um `MSGFIM` no
+fim, e os pacotes saem de uma vez, até o tamanho da janela.
 
 ```powershell
 python client.py "ola servidor"
 ```
 
-Esperado: `Pacote enviado: MSG|0|348|ola `, `MSG|1|448|serv`, `MSG|2|430|idor`, cada um
-seguido de `ACK do seq=N recebido`. No Terminal 1, uma linha `DADOS ... valido=True`
-para cada pacote.
+Esperado: os 4 pacotes (`MSG|0|348|ola `, `MSG|1|448|serv`, `MSG|2|430|idor`,
+`MSGFIM|3|0|`) enviados **antes** do primeiro ACK, depois `ACK do seq=0` a `ACK do seq=3`.
+No Terminal 1, uma linha `DADOS ... valido=True` para cada pacote e, no fim,
+`MENSAGEM COMPLETA ... (3 pacotes, 12 caracteres): 'ola servidor'`.
 
 **B7 — Mensagem com `|` e acento**
 *Verifica:* o delimitador do pacote e caracteres de 2 bytes em UTF-8 chegam intactos.
@@ -294,6 +300,46 @@ Esperado: `client.py: error: a mensagem nao pode ser vazia` e
 *Verifica:* um caractere inválido vindo do terminal (no Windows, um *surrogate* como
 `\udcff`) é barrado com erro claro, em vez de quebrar no `encode` na hora do envio. Esse
 caso é difícil de digitar no terminal, então só roda pelo `testes.py B9`.
+
+**B10 — Envio individual**
+*Verifica:* com `--envio IND`, cada pacote só sai depois que o anterior foi confirmado,
+e o `MSGFIM` também vai no fim.
+
+```powershell
+python client.py "ola servidor" --envio IND
+```
+
+Esperado: `Pacote enviado` e `ACK do seq=N recebido` **alternando**, terminando em
+`Pacote enviado: MSGFIM|3|0|` e `ACK do seq=3 recebido`. No Terminal 1,
+`MENSAGEM COMPLETA ... 'ola servidor'`.
+
+**B11 — Envio com janela SR**
+*Verifica:* o envio com Repetição Seletiva funciona com o servidor real (8 pedaços +
+`MSGFIM`, janela 5).
+
+```powershell
+python client.py "redes de computadores e legal!" --modo SR
+```
+
+Esperado: os 5 primeiros pacotes saem antes do primeiro ACK, e no fim aparece
+`ACK do seq=8 recebido`, sem nenhuma linha `Erro`. No Terminal 1, linhas
+`SR: janela agora [...]` mostrando a janela andar e
+`MENSAGEM COMPLETA ... 'redes de computadores e legal!'`.
+
+**B12 — Servidor monta a mensagem nos 3 modos**
+*Verifica:* olhando o log do servidor, que ele juntou os pedaços e imprimiu
+`MENSAGEM COMPLETA` para uma mensagem enviada em cada modo (individual, GBN e SR). Só roda
+pelo `testes.py B12`, e é pulado se já houver um servidor no ar, porque o script precisa
+ser quem sobe o servidor para ler o log dele.
+
+Na mão, é o mesmo que rodar os três comandos abaixo e conferir no Terminal 1 que
+aparecem três linhas `MENSAGEM COMPLETA`:
+
+```powershell
+python client.py "teste individual" --envio IND
+python client.py "teste go-back-n" --modo GBN
+python client.py "teste repeticao seletiva" --modo SR
+```
 
 **B4 — Cliente SEM servidor rodando**
 *Verifica:* o que acontece quando ninguém responde. **Feche o Terminal 1 antes** (`Ctrl+C`).
@@ -415,6 +461,18 @@ rápidos, alguns usam 2 tentativas em vez de 5.
 | **E11** | responde `HSACK` com checksum certo, mas sem os campos de tamanho e janela | encerrar com `HSACK malformado`, sem traceback |
 | **E12** | não existe (ninguém na porta) | esgotar as tentativas e sair sem traceback |
 
+Os testes de E1 a E12 usam o envio individual. Os de E13 a E19 testam o envio com janela:
+
+| Teste | O servidor falso... | O cliente deve... |
+| :--- | :--- | :--- |
+| **E13** (GBN) | define janela 3 e nunca confirma dados | mandar só os seqs 0, 1 e 2, nem um a mais |
+| **E14** (GBN) | age como receptor GBN e perde a 1ª cópia do seq 1 | voltar para o seq 1 e reenviar a partir dele (seqs recebidos: 0, 1, 2, 1, 2) |
+| **E15** (GBN) | confirma só o último pacote (ACK do seq 3, o `MSGFIM`) | tratar como ACK cumulativo de 0 a 3, sem retransmitir |
+| **E16** (SR) | define janela 3 e nunca confirma dados | mandar só os seqs 0, 1 e 2 |
+| **E17** (SR) | confirma cada pacote e perde a 1ª cópia do seq 1 | reenviar **só** o seq 1 (seqs recebidos: 0, 1, 2, 1) |
+| **E18** (SR) | janela 2: perde o seq 0 e confirma o 1 | não andar a janela com o ACK do 1; quando o 0 for confirmado, pular o 1 e liberar o 2 |
+| **E19** (SR) | nunca confirma o seq 1, mas confirma os outros | reenviar só o 1 (timer individual) e desistir dele com código 1 |
+
 ---
 
 ### Resumo do que os testes cobrem
@@ -422,8 +480,10 @@ rápidos, alguns usam 2 tentativas em vez de 5.
 O grupo **A** cobre a montagem e leitura dos pacotes e o cálculo do checksum; o **B**
 cobre o handshake completo entre `client.py` e `server.py` via UDP, incluindo a escolha
 de parâmetros pela linha de comando, vários clientes em sequência, o envio de uma
-mensagem com confirmação de cada pacote e o comportamento sem servidor no ar; o **C**
-cobre a validação dos parâmetros e a robustez do servidor diante de pacotes inválidos,
-inclusive checksum errado; o **D** documenta o que cada pacote malformado provoca em
-`protocol.py`, fora da rede; o **E** cobre a robustez do cliente diante de um servidor que
-perde pacotes, manda lixo ou mente no handshake.
+mensagem nos três modos (individual, GBN e SR) com o servidor montando a mensagem
+completa, e o comportamento sem servidor no ar; o **C** cobre a validação dos parâmetros
+e a robustez do servidor diante de pacotes inválidos, inclusive checksum errado; o **D**
+documenta o que cada pacote malformado provoca em `protocol.py`, fora da rede; o **E**
+cobre a robustez do cliente diante de um servidor que perde pacotes, manda lixo ou mente
+no handshake, e a retransmissão do GBN (volta e reenvia a janela) e do SR (reenvia só o
+perdido).
