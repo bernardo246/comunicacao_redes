@@ -50,6 +50,9 @@ tipo|seq|checksum|payload
 O parsing usa `split("|", 3)`: no máximo 3 divisões, garantindo que um payload que
 contenha `|` não seja picado (testado em A5).
 
+Este documento descreve a **versão 1** do protocolo (`VERSAO_PROTOCOLO = 1` no
+`config.py`). O número da versão não é transmitido no cabeçalho.
+
 ### 2.2 Checksum
 
 Algoritmo **ASCII**, implementado à mão (`protocol.calcular_checksum`), sem biblioteca
@@ -288,7 +291,7 @@ Quando o `MSGFIM` é entregue em ordem, `finalizar_mensagem` junta os payloads, 
 | Temporizador | No cliente (`TIMEOUT_ENVIO` = 1 s, `MAX_TENTATIVAS_ENVIO` = 5 tentativas por pacote): um timer no envio individual e no GBN, um timer por pacote no SR. |
 | Número de sequência | Usado nos dados: começa em `0` a cada mensagem, ordena os pacotes no servidor e identifica qual pacote cada ACK confirma. |
 | Reconhecimento positivo | `HSACK` confirma o handshake; `MSGACK` confirma cada pacote de dados (cumulativo no GBN, individual no SR). |
-| Reconhecimento negativo | Ainda não implementado: um pacote corrompido é descartado e recuperado pelo timeout do cliente. |
+| Reconhecimento negativo | Não implementado, por decisão do grupo: um pacote corrompido é descartado e recuperado pelo timeout do cliente. |
 | Janela / paralelismo | Definida pelo servidor no `HSACK` (1–5, inicial 5) e usada no envio GBN e SR: até `tamanho_janela` pacotes em voo. |
 
 ---
@@ -527,8 +530,8 @@ Casos encontrados no Checkpoint 2:
 
 | Item | Checkpoint previsto |
 | :--- | :--- |
-| `NACK` de dados: hoje um pacote corrompido só é recuperado pelo timeout do cliente | CP2/CP3 (a confirmar no enunciado) |
-| `VERSAO_PROTOCOLO` declarada no `config.py` mas ainda não usada no cabeçalho | CP2 (a confirmar no enunciado) |
+| `NACK` de dados: não implementado por decisão do grupo. Pacote corrompido é descartado e recuperado pelo timeout do cliente | fora do escopo |
+| A versão do protocolo é a `1` (`VERSAO_PROTOCOLO` no `config.py`), mas ela não vai no cabeçalho dos pacotes | fora do escopo |
 | Inserção determinística de erros e perdas pelo cliente | CP3 |
 | Se o ACK do `MSGFIM` se perder, o servidor já zerou a sessão. No GBN, o `MSGFIM` reenviado é descartado sem ACK e o cliente desiste com erro, mesmo com a mensagem entregue. No SR, um `MSGFIM` com seq menor que a janela é tratado como pacote de uma mensagem nova. Correção prevista no servidor (ex.: lembrar o seq final da última mensagem e reconfirmar o `MSGFIM` repetido) | CP3 |
 | O checksum cobre só o payload: um `seq` ou `tipo` corrompido no caminho não é detectado | CP3 |
