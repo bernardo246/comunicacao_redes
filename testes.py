@@ -48,6 +48,29 @@ def capturar_erro(funcao):
     return "nenhuma excecao levantada"
 
 
+LOG_SERVIDOR = []           # linhas impressas pelo server.py (inclusive do servidor reiniciado depois do B4)
+SERVIDOR_DO_SCRIPT = False  # True quando foi este script que subiu o servidor (e o log dele esta disponivel)
+
+
+def iniciar_servidor():
+    processo = subprocess.Popen(
+        [PYTHON, "-u", "server.py"],
+        stdout=subprocess.PIPE,
+        stderr=subprocess.STDOUT,
+        text=True,
+    )
+
+    # le a saida enquanto o servidor roda: se ninguem ler, o buffer do pipe enche,
+    # o print do servidor trava e ele para de responder no meio dos testes
+    def ler_saida():
+        for linha in processo.stdout:
+            LOG_SERVIDOR.append(linha)
+    threading.Thread(target=ler_saida, daemon=True).start()
+
+    time.sleep(1)
+    return processo
+
+
 def parar_servidor(processo):
     if sys.platform == "win32":
         processo.terminate()   # o Windows nao entrega SIGINT para outro processo (ValueError: Unsupported signal)
@@ -172,11 +195,13 @@ def b4():
 
 
 def b6():
+    # sem --modo e --envio, o padrao e GBN + LOTE: envio com janela
     saida = executar_python(["client.py", "ola servidor"])
     ok = ("Pacote enviado: MSG|0|348|ola " in saida
-          and "ACK do seq=2 recebido" in saida
+          and "Pacote enviado: MSGFIM|3|0|" in saida
+          and "ACK do seq=3 recebido" in saida
           and "Erro" not in saida)
-    return ok, saida, "3 fragmentos enviados e os 3 confirmados (ACK do seq=0, 1 e 2)"
+    return ok, saida, "3 pedacos + MSGFIM enviados com janela GBN e os 4 confirmados (ACK do seq=0 a 3)"
 
 
 def b7():
@@ -211,6 +236,41 @@ def b9():
     obtido = erro.getvalue().strip().splitlines()[-1] if erro.getvalue().strip() else "(nenhum erro)"
     ok = codigo == 2 and "nao podem ser codificados" in obtido
     return ok, obtido, "erro do argparse: caracteres que nao podem ser codificados em utf-8"
+
+
+def b10():
+    saida = executar_python(["client.py", "ola servidor", "--envio", "IND"])
+    ok = ("Pacote enviado: MSGFIM|3|0|" in saida
+          and "ACK do seq=3 recebido" in saida
+          and "Erro" not in saida)
+    return ok, saida, "envio individual: 3 pedacos + MSGFIM, cada um confirmado antes do proximo"
+
+
+def b11():
+    saida = executar_python(["client.py", "redes de computadores e legal!", "--modo", "SR"])
+    ok = "Pacote enviado: MSGFIM|8|0|" in saida and "ACK do seq=8 recebido" in saida and "Erro" not in saida
+    return ok, saida, "envio SR com janela: 8 pedacos + MSGFIM, todos confirmados"
+
+
+def b12():
+    # confere no log do servidor que ele juntou os pedacos nos 3 modos de envio
+    if not SERVIDOR_DO_SCRIPT:
+        return None, "log do servidor indisponivel (servidor externo)", "rodar sem servidor externo no ar"
+
+    envios = [
+        ("modo individual", "teste individual", ["--envio", "IND"]),
+        ("modo GBN", "teste go-back-n", ["--modo", "GBN"]),
+        ("modo SR", "teste repeticao seletiva", ["--modo", "SR"]),
+    ]
+    resultados = []
+    ok = True
+    for nome, mensagem, opcoes in envios:
+        executar_python(["client.py", mensagem] + opcoes)
+        time.sleep(0.3)   # da tempo da thread de leitura pegar a linha do servidor
+        montou = any("MENSAGEM COMPLETA" in linha and repr(mensagem) in linha for linha in LOG_SERVIDOR)
+        resultados.append(f"{nome:<16} {mensagem!r}: {'montada' if montou else 'NAO montada'}")
+        ok = ok and montou
+    return ok, "\n".join(resultados), "MENSAGEM COMPLETA no log do servidor para os 3 modos"
 
 
 # ---------------------------------------------------------------- grupo C
@@ -313,14 +373,16 @@ class ServidorFalso:
 
 def responder_padrao(pacote, endereco, falso):
     if pacote["tipo"] == config.TYPE_HANDSHAKE_REQ:
-        return [protocol.montar_handshake_ack(config.GBN, config.MODO_LOTE, 30, config.JANELA_INICIAL)]
-    if pacote["tipo"] == config.TYPE_DATA:
+        modo, envio, _ = pacote["payload"].split(config.DELIM_PAYLOAD)   # confirma o modo e o envio que o cliente pediu
+        return [protocol.montar_handshake_ack(modo, envio, 30, config.JANELA_INICIAL)]
+    if pacote["tipo"] in (config.TYPE_DATA, config.TYPE_FIM):
         return [protocol.montar_ack(pacote["seq"])]
     return []
 
 
-def rodar_cliente(responder, mensagem="ola servidor", tentativas=None):
-    """Faz handshake + envio contra o servidor falso. Devolve (codigo de saida, saida, segundos, servidor falso)."""
+def rodar_cliente(responder, mensagem="ola servidor", tentativas=None, modo=None):
+    """Faz handshake + envio contra o servidor falso. Devolve (codigo de saida, saida, segundos, servidor falso).
+    modo=None: envio individual. modo=GBN ou SR: envio com janela daquele modo."""
     originais = (client.PORTA, client.MAX_TENTATIVAS_ENVIO)
     client.PORTA = PORTA_FALSA
     if tentativas is not None:
@@ -332,9 +394,13 @@ def rodar_cliente(responder, mensagem="ola servidor", tentativas=None):
     falso = ServidorFalso(responder) if responder is not None else contextlib.nullcontext()
     try:
         with falso, contextlib.redirect_stdout(saida):
-            sock, _ = client.enviar_handshake()
-            if mensagem:
-                client.enviar_mensagem(sock, mensagem)
+            sock, sessao = client.enviar_handshake(modo or config.MODO_PADRAO)
+            if mensagem and modo == config.GBN:
+                client.enviar_gbn(sock, mensagem, sessao["tamanho_janela"])
+            elif mensagem and modo == config.SR:
+                client.enviar_sr(sock, mensagem, sessao["tamanho_janela"])
+            elif mensagem:
+                client.enviar_individual(sock, mensagem)
             sock.close()
     except SystemExit as fim:
         codigo = fim.code
@@ -501,6 +567,114 @@ def e12():
     return ok, f"{saida}\n(codigo {codigo}, {segundos:.1f}s)", "sem traceback: 2 tentativas e erro de handshake, codigo 1"
 
 
+# ---- envio com janela: GBN (E13-E15) e SR (E16-E19)
+def seqs_recebidos(falso):
+    """seqs dos pacotes MSG que chegaram no servidor falso, na ordem (o MSGFIM fica de fora)."""
+    seqs = []
+    for pacote in falso.dados():
+        seqs.append(protocol.parsear_pacote(pacote)["seq"])
+    return seqs
+
+
+def responder_sem_ack(modo, janela):
+    """Confirma o handshake com a janela pedida e nunca confirma dados."""
+    def responder(pacote, endereco, falso):
+        if pacote["tipo"] == config.TYPE_HANDSHAKE_REQ:
+            return [protocol.montar_handshake_ack(modo, config.MODO_LOTE, 30, janela)]
+        return []
+    return responder
+
+
+def e13():
+    codigo, _, _, falso = rodar_cliente(responder_sem_ack(config.GBN, 3), mensagem="ola servidor tudo bem", tentativas=1, modo=config.GBN)
+    seqs = seqs_recebidos(falso)
+    return codigo == 1 and seqs == [0, 1, 2], f"seqs recebidos sem nenhum ACK: {seqs}", "[0, 1, 2]: 3 pacotes de uma vez, nem um a mais"
+
+
+def e14():
+    # servidor falso com a regra do receptor GBN: so aceita em ordem e, fora de ordem, repete o ultimo ACK
+    estado = {"esperado": 0, "perdeu": False}
+    def responder(pacote, endereco, falso):
+        if pacote["tipo"] not in (config.TYPE_DATA, config.TYPE_FIM):
+            return responder_padrao(pacote, endereco, falso)
+        if pacote["seq"] == 1 and not estado["perdeu"]:
+            estado["perdeu"] = True
+            return []   # some com a primeira copia do seq=1
+        if pacote["seq"] == estado["esperado"]:
+            estado["esperado"] += 1
+            return [protocol.montar_ack(pacote["seq"])]
+        if estado["esperado"] > 0:
+            return [protocol.montar_ack(estado["esperado"] - 1)]
+        return []
+
+    codigo, saida, _, falso = rodar_cliente(responder, modo=config.GBN)
+    seqs = seqs_recebidos(falso)
+    ok = codigo == 0 and seqs == [0, 1, 2, 1, 2]
+    return ok, f"{saida}\nseqs recebidos: {seqs}", "seqs [0, 1, 2, 1, 2]: perdeu o 1, volta e reenvia a partir dele"
+
+
+def e15():
+    def responder(pacote, endereco, falso):
+        if pacote["tipo"] in (config.TYPE_DATA, config.TYPE_FIM):
+            if pacote["tipo"] == config.TYPE_FIM:
+                return [protocol.montar_ack(pacote["seq"])]   # so confirma o ultimo (o MSGFIM, seq=3)
+            return []
+        return responder_padrao(pacote, endereco, falso)
+
+    codigo, saida, _, falso = rodar_cliente(responder, modo=config.GBN)
+    ok = codigo == 0 and len(falso.dados()) == 3 and "Tentativa" not in saida
+    return ok, saida, "o ACK do seq=3 confirma 0, 1, 2 e 3 de uma vez, sem retransmissao"
+
+
+def e16():
+    codigo, _, _, falso = rodar_cliente(responder_sem_ack(config.SR, 3), mensagem="ola servidor tudo bem", tentativas=1, modo=config.SR)
+    seqs = seqs_recebidos(falso)
+    return codigo == 1 and seqs == [0, 1, 2], f"seqs recebidos sem nenhum ACK: {seqs}", "[0, 1, 2]: 3 pacotes de uma vez, nem um a mais"
+
+
+def e17():
+    # receptor SR: confirma cada pacote individualmente, mesmo fora de ordem
+    perdeu = []
+    def responder(pacote, endereco, falso):
+        if pacote["tipo"] == config.TYPE_DATA and pacote["seq"] == 1 and not perdeu:
+            perdeu.append(1)
+            return []   # some com a primeira copia do seq=1
+        return responder_padrao(pacote, endereco, falso)
+
+    codigo, saida, _, falso = rodar_cliente(responder, modo=config.SR)
+    seqs = seqs_recebidos(falso)
+    ok = codigo == 0 and seqs == [0, 1, 2, 1]
+    return ok, f"{saida}\nseqs recebidos: {seqs}", "seqs [0, 1, 2, 1]: perdeu o 1 e reenvia SO o 1"
+
+
+def e18():
+    perdeu = []
+    def responder(pacote, endereco, falso):
+        if pacote["tipo"] == config.TYPE_HANDSHAKE_REQ:
+            return [protocol.montar_handshake_ack(config.SR, config.MODO_LOTE, 30, 2)]   # janela 2
+        if pacote["tipo"] == config.TYPE_DATA and pacote["seq"] == 0 and not perdeu:
+            perdeu.append(1)
+            return []   # some com a primeira copia do seq=0; o seq=1 e confirmado antes dele
+        return responder_padrao(pacote, endereco, falso)
+
+    codigo, saida, _, falso = rodar_cliente(responder, modo=config.SR)
+    seqs = seqs_recebidos(falso)
+    ok = codigo == 0 and seqs == [0, 1, 0, 2]
+    return ok, f"{saida}\nseqs recebidos: {seqs}", "seqs [0, 1, 0, 2]: o ACK do 1 nao anda a janela; quando o 0 chega, ela pula o 1 e libera o 2"
+
+
+def e19():
+    def responder(pacote, endereco, falso):
+        if pacote["tipo"] == config.TYPE_DATA and pacote["seq"] == 1:
+            return []   # o seq=1 nunca e confirmado
+        return responder_padrao(pacote, endereco, falso)
+
+    codigo, saida, _, falso = rodar_cliente(responder, tentativas=2, modo=config.SR)
+    seqs = seqs_recebidos(falso)
+    ok = codigo == 1 and "o seq=1 nao foi confirmado depois de 2 tentativas" in saida and seqs == [0, 1, 2, 1]
+    return ok, f"{saida}\nseqs recebidos: {seqs}", "so o seq=1 e reenviado (timer individual) e o cliente desiste dele com codigo 1"
+
+
 TESTES = [
     ("A1", "HS e HSACK montados e lidos de volta", a1, False, False),
     ("A2", "checksum ASCII de 'ABC'", a2, False, False),
@@ -517,6 +691,9 @@ TESTES = [
     ("B7", "mensagem com '|' e acento chega intacta", b7, True, False),
     ("B8", "mensagem vazia ou longa barrada no cliente", b8, False, False),
     ("B9", "mensagem com caractere invalido barrada", b9, False, False),
+    ("B10", "envio individual com MSGFIM", b10, True, False),
+    ("B11", "envio SR com janela", b11, True, False),
+    ("B12", "servidor monta a mensagem nos 3 modos", b12, True, False),
     ("B4", "cliente sem servidor no ar (~5s)", b4, False, True),
     ("C1", "tamanho abaixo do minimo corrigido para 30", c1, True, False),
     ("C2", "modo e tipo de envio invalidos recusados", c2, True, False),
@@ -540,11 +717,18 @@ TESTES = [
     ("E10", "HSACK com checksum errado descartado", e10, False, False),
     ("E11", "HSACK malformado encerra com erro claro", e11, False, False),
     ("E12", "handshake sem servidor sai sem traceback", e12, False, False),
+    ("E13", "GBN: manda so o que cabe na janela", e13, False, False),
+    ("E14", "GBN: perda faz voltar e reenviar", e14, False, False),
+    ("E15", "GBN: ACK cumulativo confirma varios", e15, False, False),
+    ("E16", "SR: manda so o que cabe na janela", e16, False, False),
+    ("E17", "SR: perda reenvia so o perdido", e17, False, False),
+    ("E18", "SR: ACK fora de ordem nao anda a base", e18, False, False),
+    ("E19", "SR: timer individual e desistencia", e19, False, False),
 ]
 
 TITULOS = {
     "A": "GRUPO A - protocolo isolado (sem rede)",
-    "B": "GRUPO B - handshake completo pela rede",
+    "B": "GRUPO B - handshake e envio pela rede",
     "C": "GRUPO C - validacao e robustez do servidor",
     "D": "GRUPO D - pacotes malformados (sem rede)",
     "E": "GRUPO E - robustez do cliente (servidor falso)",
@@ -570,7 +754,7 @@ def imprimir_bloco(texto, prefixo="        "):
 
 def main():
     parser = argparse.ArgumentParser(description="Bateria de testes do trabalho de redes.")
-    parser.add_argument("alvos", nargs="*", help="grupo (A, B, C, D) ou teste (A1, C4...). Sem argumento roda todos.")
+    parser.add_argument("alvos", nargs="*", help="grupo (A, B, C, D, E) ou teste (A1, C4...). Sem argumento roda todos.")
     parser.add_argument("--completo", action="store_true", help="inclui tambem os testes lentos (B4)")
     parser.add_argument("--silencioso", action="store_true", help="mostra so o veredito de cada teste")
     args = parser.parse_args()
@@ -592,14 +776,11 @@ def main():
             servidor_externo = True
             print(f"Ja existe algo escutando em {config.HOST}:{config.PORTA}; usando esse servidor.")
         elif precisa_servidor:
-            servidor = subprocess.Popen(
-                [PYTHON, "-u", "server.py"],
-                stdout=subprocess.PIPE,
-                stderr=subprocess.STDOUT,
-                text=True,
-            )
-            time.sleep(1)
+            servidor = iniciar_servidor()
             print(f"Servidor iniciado pelo script em {config.HOST}:{config.PORTA}.")
+
+    global SERVIDOR_DO_SCRIPT
+    SERVIDOR_DO_SCRIPT = servidor is not None
 
     passaram = 0
     falharam = 0
@@ -630,6 +811,11 @@ def main():
             except Exception as erro:
                 ok, obtido, esperado = False, f"{type(erro).__name__}: {erro}", "sem excecao"
 
+            if ok is None:   # o teste nao tem como rodar neste cenario
+                pulados.append((identificador, obtido))
+                print(f"{identificador}  {titulo:<48} [PULADO]")
+                continue
+
             print(f"{identificador}  {titulo:<48} {'[OK]' if ok else '[FALHOU]'}")
             if not args.silencioso:
                 imprimir_bloco(obtido)
@@ -643,22 +829,17 @@ def main():
                 falharam += 1
 
             if identificador == "B4" and servidor is not None:
-                servidor = subprocess.Popen(
-                    [PYTHON, "-u", "server.py"],
-                    stdout=subprocess.PIPE,
-                    stderr=subprocess.STDOUT,
-                    text=True,
-                )
-                time.sleep(1)
+                servidor = iniciar_servidor()
     finally:
-        log = ""
         if servidor is not None and servidor.poll() is None:
             parar_servidor(servidor)
             try:
-                log = servidor.communicate(timeout=5)[0]
+                servidor.wait(timeout=5)
             except subprocess.TimeoutExpired:
                 servidor.kill()
-                log = servidor.communicate()[0]
+                servidor.wait()
+            time.sleep(0.2)   # deixa a thread de leitura pegar as ultimas linhas
+        log = "".join(LOG_SERVIDOR)
 
         if log.strip():
             print()
