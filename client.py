@@ -1,11 +1,21 @@
 #criar cabeçalho + handshake
 
+# O cliente funciona em duas etapas, e a config_sessao liga uma na outra:
+#
+# 1. Handshake: o cliente propoe os parametros (vindos da linha de comando) e o servidor responde
+#    com o HSACK. O enviar_handshake devolve a config_sessao, um dicionario com o que o servidor CONFIRMOU:
+#        {"modo_retransmissao": "GBN", "tipo_envio": "LOTE", "tamanho_max_texto": 30, "tamanho_janela": 5}
+#
+# 2. Envio: daqui pra frente tudo e decidido pela config_sessao, e nao pelos argumentos digitados:
+#    o tamanho maximo da mensagem, se o envio e GBN ou individual e o tamanho da janela.
+
 import argparse
 import socket
 import sys
 import time
 from config import *
 from protocol import montar_handshake_request, parsear_handshake, fragmentar_texto, montar_pacote_data, parsear_pacote, calcular_checksum
+from protocol import montar_pacotes_mensagem
 
 """
 OBS: so tem que deixar essa função ser mais maleavel, sendo possivel escolher gbn ou sr, lote ou individual
@@ -21,7 +31,7 @@ def enviar_handshake(modo_retransmissao=MODO_PADRAO, tipo_envio=ENVIO_PADRAO, ta
     while tentativas < MAX_TENTATIVAS_ENVIO: # limite vem do config.py, pra ele nao ficar tentando infinitamente
         sock.sendto(handshake.encode(ENCODING), (HOST, PORTA)) # envia o handshake para o servidor
         tentativas += 1
-        resposta = receber_resposta(sock, TYPE_HANDSHAKE_ACK, 0) # so aceita um HSACK valido vindo do servidor
+        resposta = receber_resposta(sock, TYPE_HANDSHAKE_ACK, [0]) # so aceita um HSACK valido vindo do servidor
         if resposta is not None:
             break
         print(f"Tentativa {tentativas}: sem resposta valida do servidor, tentando de novo...")
@@ -87,9 +97,10 @@ def ler_argumentos():
     return args
 
 
-# espera ate TIMEOUT_ENVIO por um pacote do tipo e seq esperados. Retorna o pacote (string) ou None se o prazo acabar.
+# espera ate TIMEOUT_ENVIO por um pacote do tipo esperado com o seq dentro de seqs_esperados (ex.: [0] ou range(2, 5)).
+# Retorna o pacote (string) ou None se o prazo acabar.
 # Qualquer outra coisa que chegar no meio do caminho e descartada, sem derrubar o cliente.
-def receber_resposta(sock, tipo_esperado, seq_esperado):
+def receber_resposta(sock, tipo_esperado, seqs_esperados):
     servidor = (socket.gethostbyname(HOST), PORTA) # recvfrom devolve o IP, entao compara com o IP do HOST
     prazo = time.monotonic() + TIMEOUT_ENVIO # prazo fixo: pacotes errados chegando nao renovam o tempo de espera
 
@@ -122,14 +133,14 @@ def receber_resposta(sock, tipo_esperado, seq_esperado):
             print("Descartado: checksum invalido:", bruto)
             continue
 
-        if pacote["tipo"] != tipo_esperado or pacote["seq"] != seq_esperado:
+        if pacote["tipo"] != tipo_esperado or pacote["seq"] not in seqs_esperados:
             print("Descartado: nao e o esperado:", bruto) # ex.: ACK repetido de um pacote anterior
             continue
 
         return bruto
 
 
-def enviar_mensagem(sock, mensagem):
+def enviar_individual(sock, mensagem):
     fragmentos = fragmentar_texto(mensagem) # quebra a mensagem em pedacos de ate 4 caracteres
     print("Fragmentos da mensagem:", fragmentos)
 
@@ -140,7 +151,7 @@ def enviar_mensagem(sock, mensagem):
         sock.sendto(pacote.encode(ENCODING), (HOST, PORTA)) # mesmo socket do handshake, para o servidor achar a sessao
         print("Pacote enviado:", pacote)
 
-        if receber_resposta(sock, TYPE_DATA_ACK, indice) is not None:
+        if receber_resposta(sock, TYPE_DATA_ACK, [indice]) is not None:
             print(f"ACK do seq={indice} recebido")
             indice += 1
             tentativas = 0 # zera para o proximo pacote
@@ -149,6 +160,40 @@ def enviar_mensagem(sock, mensagem):
             if tentativas == MAX_TENTATIVAS_ENVIO:
                 encerrar_com_erro(sock, f"o seq={indice} nao foi confirmado depois de {MAX_TENTATIVAS_ENVIO} tentativas.")
             print(f"Tentativa {tentativas}: sem ACK do seq={indice}, reenviando...")
+
+
+# Go-Back-N: manda varios pacotes de uma vez, ate o tamanho da janela.
+# O ACK e cumulativo: o ACK do seq n confirma todos os pacotes ate n.
+# Se o tempo acabar sem ACK, volta para o primeiro pacote sem confirmacao e reenvia a partir dele.
+def enviar_gbn(sock, mensagem, janela):
+    pacotes = montar_pacotes_mensagem(mensagem) # pedacos de 4 caracteres e o MSGFIM no final
+    print("Pacotes da mensagem:", pacotes)
+
+    base = 0      # primeiro pacote que ainda nao foi confirmado
+    proximo = 0   # proximo pacote que ainda nao foi enviado
+    tentativas = 0
+
+    while base < len(pacotes):
+        # manda todos os pacotes que cabem na janela
+        while proximo < len(pacotes) and proximo < base + janela:
+            sock.sendto(pacotes[proximo].encode(ENCODING), (HOST, PORTA))
+            print("Pacote enviado:", pacotes[proximo])
+            proximo += 1
+
+        # aceita o ACK de qualquer pacote que ja foi enviado e ainda nao foi confirmado
+        resposta = receber_resposta(sock, TYPE_DATA_ACK, range(base, proximo))
+
+        if resposta is not None:
+            seq_confirmado = parsear_pacote(resposta)["seq"]
+            print(f"ACK do seq={seq_confirmado} recebido")
+            base = seq_confirmado + 1 # tudo ate esse seq foi confirmado, entao a janela anda
+            tentativas = 0
+        else:
+            tentativas += 1
+            if tentativas == MAX_TENTATIVAS_ENVIO:
+                encerrar_com_erro(sock, f"o seq={base} nao foi confirmado depois de {MAX_TENTATIVAS_ENVIO} tentativas.")
+            print(f"Tentativa {tentativas}: sem ACK do seq={base}, reenviando a partir dele...")
+            proximo = base # volta para a base, e o laco de cima reenvia a janela
 
 
 def encerrar_com_erro(sock, motivo):
@@ -162,11 +207,17 @@ def main():
     sock, config_sessao = enviar_handshake(args.modo, args.envio, args.texto)
     print ("Configuração da sessão:", config_sessao)
 
+    # a partir daqui o cliente segue a config_sessao (o que o servidor confirmou), e nao os args
+
     if args.mensagem is not None:
         # confere de novo com o valor confirmado no HSACK, que e o que vale para a sessao
         if len(args.mensagem) > config_sessao["tamanho_max_texto"]:
             encerrar_com_erro(sock, f"a mensagem passa do tamanho maximo confirmado pelo servidor ({config_sessao['tamanho_max_texto']}).")
-        enviar_mensagem(sock, args.mensagem)
+
+        if config_sessao["modo_retransmissao"] == GBN and config_sessao["tipo_envio"] == MODO_LOTE:
+            enviar_gbn(sock, args.mensagem, config_sessao["tamanho_janela"])
+        else:
+            enviar_individual(sock, args.mensagem)
 
 
     sock.close()
