@@ -84,29 +84,32 @@ def criptografia_simetrica(chave, dados):
 
 def cifrar_mensagem(chave, texto):
     '''
-    Cifra o texto inteiro com RC4 e devolve o resultado em hexadecimal (str).
+    Cifra o texto inteiro com RC4 e devolve o resultado como string (str), com um
+    caractere por byte cifrado (chr): o tamanho cifrado é igual ao dos bytes do texto,
+    sem dobrar a quantidade de pacotes.
 
-    O texto cifrado tem bytes quaisquer, que não cabem num pacote (string com "|" e UTF-8).
-    Por isso cada byte vira 2 caracteres hex: o resultado tem o dobro de bytes do texto.
+    Cada caractere do resultado tem código de 0 a 255 e pode ser qualquer um deles,
+    inclusive o delimitador "|" (o parsear_pacote preserva o "|" dentro do payload).
     Deve ser chamada antes de fragmentar a mensagem em pacotes.
 
-    Ex.: chave "Key", texto "Plaintext" -> "bbf316e8d940af0ad3".
+    Ex.: chave "Key", texto "Plaintext" -> 9 caracteres, de códigos 187, 243, 22, ...
     '''
     cifrados = criptografia_simetrica(chave, texto.encode("utf-8"))
-    return "".join(format(byte, "02x") for byte in cifrados)
+    return "".join(chr(byte) for byte in cifrados)
 
-def decifrar_mensagem(chave, texto_hex):
+def decifrar_mensagem(chave, texto_cifrado):
     '''
-    Operação inversa de cifrar_mensagem: recebe o hex (str) da mensagem já remontada,
-    converte de volta para bytes, decifra com RC4 e devolve o texto original (str).
+    Operação inversa de cifrar_mensagem: recebe a string cifrada já remontada, converte cada
+    caractere de volta para byte (ord), decifra com RC4 e devolve o texto original (str).
 
-    Levanta ValueError se o hex for inválido (tamanho ímpar ou caractere fora de 0-9/a-f),
-    ou se o resultado não for UTF-8 válido (chave errada).
+    Levanta ValueError se algum caractere tiver código acima de 255 (não pode ter saído de
+    cifrar_mensagem) ou se o resultado não for UTF-8 válido (costuma indicar chave errada).
     '''
-    if len(texto_hex) % 2 != 0:
-        raise ValueError("Texto hexadecimal com tamanho ímpar")
-    cifrados = bytes(int(texto_hex[i:i+2], 16) for i in range(0, len(texto_hex), 2))
-    return criptografia_simetrica(chave, cifrados).decode("utf-8")
+    codigos = [ord(c) for c in texto_cifrado]
+    for codigo in codigos:
+        if codigo > 255:
+            raise ValueError("Caractere fora do intervalo 0-255 no texto cifrado")
+    return criptografia_simetrica(chave, bytes(codigos)).decode("utf-8")
 
 
 # Funções de handshake

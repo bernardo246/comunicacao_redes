@@ -104,36 +104,57 @@ operação**. São duas fases:
 | Função | O que faz |
 | :--- | :--- |
 | `criptografia_simetrica(chave, dados)` | RC4 puro. Recebe a chave (`str`) e os dados (`bytes`) e devolve `bytes`. Serve para cifrar e para decifrar. Levanta `ValueError` se a chave for vazia. |
-| `cifrar_mensagem(chave, texto)` | `texto` → UTF-8 → RC4 → **hexadecimal** (`str`). |
-| `decifrar_mensagem(chave, texto_hex)` | hexadecimal → bytes → RC4 → UTF-8 → texto original. |
+| `cifrar_mensagem(chave, texto)` | `texto` → UTF-8 → RC4 → **um caractere por byte cifrado** (`chr`), devolvido como `str`. |
+| `decifrar_mensagem(chave, texto_cifrado)` | cada caractere → byte (`ord`) → RC4 → UTF-8 → texto original. Levanta `ValueError` se algum caractere tiver código acima de 255. |
 
-**Por que hexadecimal:** o texto cifrado tem bytes quaisquer, que podem ser o `|` (o
-delimitador do pacote) ou não ser UTF-8 válido. Cada byte vira 2 caracteres de `0-9a-f`,
-seguros dentro do pacote. O custo é que a mensagem cifrada ocupa o **dobro** de caracteres,
-então gera o dobro de pacotes de 4 caracteres.
+**Um caractere por byte (`chr`/`ord`):** o texto cifrado tem bytes quaisquer, e o pacote é
+uma string. Cada byte cifrado (0 a 255) vira **um caractere** com `chr` e volta com `ord`.
+O RC4 devolve um byte para cada byte de entrada, então o tamanho cifrado é igual ao original
+e a quantidade de pacotes **não dobra** (antes, com hexadecimal, dobrava).
+
+Isso funciona com o protocolo porque:
+
+- o `|` pode aparecer no texto cifrado, mas o `parsear_pacote` separa só 3 campos, então o
+  `|` dentro do payload é preservado;
+- o checksum soma `ord(c)` de cada caractere, o que continua valendo;
+- os caracteres de código 128 a 255 viram 2 bytes na rede em UTF-8, mas contam como 1
+  caractere para o limite de 4 do payload.
+
+**Custos:**
+
+- O texto cifrado **não é legível** no log: aparecem caracteres estranhos e de controle
+  (códigos 0 a 31 e 127 a 159 não imprimíveis).
+- Se o enunciado contar o payload em **bytes** e não em caracteres, um caractere acima de 127
+  ocupa 2 bytes e estoura o limite de 4. Hoje o código conta caracteres.
+- Acento no texto original (`é` tem 2 bytes em UTF-8) gera mais caracteres cifrados do que o
+  texto tinha. Com texto sem acento o tamanho é exato.
 
 **Exemplos** (as duas primeiras linhas são vetores de teste conhecidos do RC4):
 
-| Chave | Texto | Hex cifrado |
+| Chave | Texto | Códigos dos caracteres cifrados |
 | :--- | :--- | :--- |
-| `Key` | `Plaintext` | `bbf316e8d940af0ad3` |
-| `Wiki` | `pedia` | `1021bf0420` |
-| `segredo` | `ola, mundo` | `c76a07131da97a5a4315` |
+| `Key` | `Plaintext` | `187 243 22 232 217 64 175 10 211` (em hex: `bbf316e8d940af0ad3`) |
+| `Wiki` | `pedia` | `16 33 191 4 32` (em hex: `1021bf0420`) |
+| `segredo` | `ola, mundo` | 10 caracteres (mesmo tamanho do texto) |
+
+Os códigos em hexadecimal são os vetores de teste publicados do RC4, úteis para conferir a
+implementação.
 
 **Onde entra no fluxo** (a ligação com `client.py` e `server.py` ainda não está feita):
 
 ```
-cliente:  texto → cifrar_mensagem → hex → fragmentar em pedaços de 4 → MSG... + MSGFIM
-servidor: junta os pedaços (hex) → decifrar_mensagem → texto
+cliente:  texto → cifrar_mensagem → fragmentar em pedaços de 4 → MSG... + MSGFIM
+servidor: junta os pedaços → decifrar_mensagem → texto
 ```
 
 A mensagem é cifrada **inteira antes de fragmentar**, e decifrada **depois de remontada**,
 porque o RC4 precisa do fluxo completo e cada pacote leva só 4 caracteres. O checksum
-continua sendo calculado sobre o payload do pacote, que agora é um trecho do hex.
+continua sendo calculado sobre o payload do pacote, que agora é um trecho do texto cifrado.
 
-**Erros tratados em `decifrar_mensagem`:** `ValueError` para hex de tamanho ímpar, para
-caractere fora de `0-9a-f` e para resultado que não seja UTF-8 (o que costuma indicar chave
-errada, mas não é garantido: uma chave errada pode, por acaso, gerar UTF-8 válido).
+**Erros tratados em `decifrar_mensagem`:** `ValueError` para caractere com código acima de
+255 (não pode ter saído de `cifrar_mensagem`) e para resultado que não seja UTF-8 (o que
+costuma indicar chave errada, mas não é garantido: uma chave errada pode, por acaso, gerar
+UTF-8 válido).
 
 **Limitações:**
 
