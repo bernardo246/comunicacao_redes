@@ -124,8 +124,9 @@ Isso funciona com o protocolo porque:
 
 - O texto cifrado **não é legível** no log: aparecem caracteres estranhos e de controle
   (códigos 0 a 31 e 127 a 159 não imprimíveis).
-- Se o enunciado contar o payload em **bytes** e não em caracteres, um caractere acima de 127
-  ocupa 2 bytes e estoura o limite de 4. Hoje o código conta caracteres.
+- O limite de 4 do payload é em **caracteres**, conforme o enunciado, e é isso que o código
+  conta. Um caractere de código acima de 127 ocupa 2 bytes na rede em UTF-8, mas continua
+  valendo 1 para esse limite.
 - Acento no texto original (`é` tem 2 bytes em UTF-8) gera mais caracteres cifrados do que o
   texto tinha. Com texto sem acento o tamanho é exato.
 
