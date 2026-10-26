@@ -46,6 +46,39 @@
   mensagem no `MSG`, vazio no `MSGFIM` e no `MSGACK`).
 
 
+# Checagem de integridade (checksum)
+
+Implementada **à mão** na função `calcular_checksum` do [protocol.py](protocol.py), sem
+biblioteca externa nem código pronto. Serve para detectar se o payload foi alterado no caminho.
+
+**Algoritmo `Ascii`:** soma o código ASCII de cada caractere do payload, usando só um laço e
+`ord()`.
+
+| Payload | Conta | Checksum |
+| :--- | :--- | :--- |
+| `ABC` | 65 + 66 + 67 | `198` |
+| `ola,` | 111 + 108 + 97 + 44 | `360` |
+| *(vazio)* | — | `0` |
+
+**Como é usado:**
+
+1. **Quem envia** calcula o checksum do payload e o coloca no cabeçalho
+   (`tipo|seq|checksum|payload`). Isso vale para todo pacote: handshake, dados, `MSGFIM` e ACK.
+2. **Quem recebe** recalcula o checksum sobre o payload que chegou e compara com o do
+   cabeçalho. O resultado fica em `info["checksum_valido"]` (`parsear_pacote_data`).
+3. **Iguais:** o pacote está íntegro. **Diferentes:** o pacote foi corrompido e é
+   descartado. Sem o ACK, o remetente retransmite pelo temporizador.
+
+**Limitações:**
+
+- Pacotes sem payload (`MSGFIM`, `MSGACK`) têm checksum `0`.
+- A soma não detecta erros que preservam o total, como a troca de ordem dos caracteres
+  (`"ab"` e `"ba"` somam igual). O algoritmo é escolhido por `ALGORITMO_CHECKSUM_PADRAO` no
+  `config.py`, fixo nos dois lados e não negociado no handshake. Para trocar por outro,
+  basta novo ramo em `calcular_checksum`; algoritmo desconhecido levanta `ValueError`.
+
+---
+
 # Variáveis de configuração (Handshake)
 
 - **modo** — Modo de operação: envio individual/lote + confirmação GBN/SR.

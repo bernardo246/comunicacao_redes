@@ -4,7 +4,7 @@ from config import *
 Formato de todo pacote: tipo|seq|checksum|payload
 - tipo: identifica a natureza do pacote (handshake, dado, ack, ...)
 - seq: número de sequência (0 no handshake, ainda não é usado)
-- checksum: placeholder por enquanto ("0"), vira campo real no checkpoint 3
+- checksum: soma dos códigos ASCII do payload (ver calcular_checksum)
 - payload: conteúdo específico do tipo de pacote
  
 No handshake, o payload carrega os parâmetros da sessão, separados por vírgula:
@@ -28,14 +28,23 @@ def parsear_pacote(pacote):
         "payload": payload,
     }
 
-# calcula o checksum de um payload (string) somando os códigos ASCII de cada caractere
+# Checagem de integridade, implementada à mão (sem biblioteca externa)
 def calcular_checksum(algoritmo,payload):
-    '''por enquanto só implementa o algoritmo Ascii, que soma os códigos ASCII de cada caractere do payload.'''
+    '''
+    Calcula o checksum de um payload (string), usado para detectar corrupção no caminho.
 
-    if algoritmo == "Ascii":
-        soma = 0
-        for c in payload:
-            soma += ord(c)
+    Algoritmo "Ascii": soma o código de cada caractere do payload (ord).
+    Ex.: "ABC" -> 65 + 66 + 67 = 198. Payload vazio -> 0.
+
+    Quem envia grava o resultado no cabeçalho do pacote; quem recebe recalcula sobre o
+    payload que chegou e compara. Se os valores forem diferentes, o pacote foi alterado e
+    deve ser descartado.
+    '''
+
+    if algoritmo == CHECKSUM_ASCII:
+        soma = 0                 # acumulador da soma dos códigos
+        for c in payload:        # percorre o payload caractere a caractere
+            soma += ord(c)       # ord() devolve o código numérico do caractere
         return soma
     else:
         raise ValueError("Algoritmo de checksum não suportado")
