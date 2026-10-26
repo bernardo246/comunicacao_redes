@@ -49,6 +49,65 @@ def calcular_checksum(algoritmo,payload):
     else:
         raise ValueError("Algoritmo de checksum não suportado")
 
+#criptografia simetrica, implementada à mão (sem biblioteca externa)
+def criptografia_simetrica(chave, dados):
+    '''
+    Cifra de fluxo RC4. Recebe a chave (str) e os dados (bytes) e devolve os dados
+    transformados (bytes). Cifrar e decifrar são a mesma operação: aplicar a função duas
+    vezes com a mesma chave devolve o original.
+
+    Ex.: chave "Key", dados b"Plaintext" -> bytes cujo hex é "bbf316e8d940af0ad3".
+    '''
+    chave_bytes = list(chave.encode("utf-8"))   # a chave vira lista de números 0..255
+    if len(chave_bytes) == 0:
+        raise ValueError("A chave de criptografia não pode ser vazia")
+
+    # KSA: embaralha a lista S de 256 posições usando a chave
+    S = list(range(256))
+    j = 0
+    for i in range(256):
+        j = (j + S[i] + chave_bytes[i % len(chave_bytes)]) % 256
+        S[i], S[j] = S[j], S[i]
+
+    # PRGA: gera um byte do keystream por byte de dados e combina com XOR
+    i = 0
+    j = 0
+    resultado = []
+    for byte in dados:
+        i = (i + 1) % 256
+        j = (j + S[i]) % 256
+        S[i], S[j] = S[j], S[i]
+        k = S[(S[i] + S[j]) % 256]    # byte do keystream
+        resultado.append(byte ^ k)
+
+    return bytes(resultado)
+
+def cifrar_mensagem(chave, texto):
+    '''
+    Cifra o texto inteiro com RC4 e devolve o resultado em hexadecimal (str).
+
+    O texto cifrado tem bytes quaisquer, que não cabem num pacote (string com "|" e UTF-8).
+    Por isso cada byte vira 2 caracteres hex: o resultado tem o dobro de bytes do texto.
+    Deve ser chamada antes de fragmentar a mensagem em pacotes.
+
+    Ex.: chave "Key", texto "Plaintext" -> "bbf316e8d940af0ad3".
+    '''
+    cifrados = criptografia_simetrica(chave, texto.encode("utf-8"))
+    return "".join(format(byte, "02x") for byte in cifrados)
+
+def decifrar_mensagem(chave, texto_hex):
+    '''
+    Operação inversa de cifrar_mensagem: recebe o hex (str) da mensagem já remontada,
+    converte de volta para bytes, decifra com RC4 e devolve o texto original (str).
+
+    Levanta ValueError se o hex for inválido (tamanho ímpar ou caractere fora de 0-9/a-f),
+    ou se o resultado não for UTF-8 válido (chave errada).
+    '''
+    if len(texto_hex) % 2 != 0:
+        raise ValueError("Texto hexadecimal com tamanho ímpar")
+    cifrados = bytes(int(texto_hex[i:i+2], 16) for i in range(0, len(texto_hex), 2))
+    return criptografia_simetrica(chave, cifrados).decode("utf-8")
+
 
 # Funções de handshake
 def montar_handshake_request(modo_retransmissao, tipo_envio, tamanho_max_texto):

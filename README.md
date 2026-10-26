@@ -79,6 +79,72 @@ biblioteca externa nem código pronto. Serve para detectar se o payload foi alte
 
 ---
 
+# Criptografia simétrica (RC4)
+
+Implementada **à mão** no [protocol.py](protocol.py), sem biblioteca externa nem código
+pronto. Protege o conteúdo da mensagem: quem captura os pacotes vê só texto cifrado.
+É diferente do checksum, que apenas detecta corrupção e não esconde o conteúdo.
+
+**Algoritmo:** RC4, uma cifra de fluxo. Dois lados com a **mesma chave** geram a mesma
+sequência de bytes (*keystream*), e cada byte da mensagem é combinado com ela por XOR.
+Como XOR duas vezes com o mesmo valor devolve o original, **cifrar e decifrar são a mesma
+operação**. São duas fases:
+
+1. **KSA:** cria a lista `S` com os números 0 a 255 e a embaralha usando a chave:
+   `j = (j + S[i] + chave[i % len(chave)]) % 256`, trocando `S[i]` e `S[j]`.
+2. **PRGA:** para cada byte da mensagem, avança `i` e `j`, troca `S[i]` e `S[j]` e tira o
+   byte do keystream `k = S[(S[i] + S[j]) % 256]`. O byte cifrado é `byte ^ k`.
+
+**Funções:**
+
+| Função | O que faz |
+| :--- | :--- |
+| `criptografia_simetrica(chave, dados)` | RC4 puro. Recebe a chave (`str`) e os dados (`bytes`) e devolve `bytes`. Serve para cifrar e para decifrar. Levanta `ValueError` se a chave for vazia. |
+| `cifrar_mensagem(chave, texto)` | `texto` → UTF-8 → RC4 → **hexadecimal** (`str`). |
+| `decifrar_mensagem(chave, texto_hex)` | hexadecimal → bytes → RC4 → UTF-8 → texto original. |
+
+**Por que hexadecimal:** o texto cifrado tem bytes quaisquer, que podem ser o `|` (o
+delimitador do pacote) ou não ser UTF-8 válido. Cada byte vira 2 caracteres de `0-9a-f`,
+seguros dentro do pacote. O custo é que a mensagem cifrada ocupa o **dobro** de caracteres,
+então gera o dobro de pacotes de 4 caracteres.
+
+**Exemplos** (as duas primeiras linhas são vetores de teste conhecidos do RC4):
+
+| Chave | Texto | Hex cifrado |
+| :--- | :--- | :--- |
+| `Key` | `Plaintext` | `bbf316e8d940af0ad3` |
+| `Wiki` | `pedia` | `1021bf0420` |
+| `segredo` | `ola, mundo` | `c76a07131da97a5a4315` |
+
+**Onde entra no fluxo** (a ligação com `client.py` e `server.py` ainda não está feita):
+
+```
+cliente:  texto → cifrar_mensagem → hex → fragmentar em pedaços de 4 → MSG... + MSGFIM
+servidor: junta os pedaços (hex) → decifrar_mensagem → texto
+```
+
+A mensagem é cifrada **inteira antes de fragmentar**, e decifrada **depois de remontada**,
+porque o RC4 precisa do fluxo completo e cada pacote leva só 4 caracteres. O checksum
+continua sendo calculado sobre o payload do pacote, que agora é um trecho do hex.
+
+**Erros tratados em `decifrar_mensagem`:** `ValueError` para hex de tamanho ímpar, para
+caractere fora de `0-9a-f` e para resultado que não seja UTF-8 (o que costuma indicar chave
+errada, mas não é garantido: uma chave errada pode, por acaso, gerar UTF-8 válido).
+
+**Limitações:**
+
+- **RC4 é considerado inseguro** para uso real (o início do keystream tem viés estatístico e
+  há ataques conhecidos). Aqui serve para demonstrar uma cifra simétrica implementada à mão.
+- **Reuso de chave:** com a mesma chave em duas mensagens, o keystream se repete, e
+  combinar as duas mensagens cifradas revela informação sobre os textos. Não há nonce nem
+  vetor de inicialização.
+- **Sem autenticação:** a cifra não detecta alteração. Quem detecta é o checksum, que é uma
+  soma simples e não resiste a um atacante.
+- **Troca de chave:** a chave precisa ser a mesma nos dois lados e este trabalho não resolve
+  como compartilhá-la. Mandá-la no handshake a exporia em texto puro.
+
+---
+
 # Variáveis de configuração (Handshake)
 
 - **modo** — Modo de operação: envio individual/lote + confirmação GBN/SR.
