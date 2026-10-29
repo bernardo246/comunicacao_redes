@@ -14,7 +14,7 @@ import socket
 import sys
 import time
 from config import *
-from protocol import montar_handshake_request, parsear_handshake, parsear_pacote, calcular_checksum
+from protocol import montar_handshake_request, parsear_handshake, parsear_pacote, calcular_checksum_pacote
 from protocol import montar_pacotes_mensagem
 
 """
@@ -130,7 +130,7 @@ def receber_resposta(sock, tipo_esperado, seqs_esperados, espera=TIMEOUT_ENVIO):
             print(f"Descartado: pacote malformado ({erro})")
             continue
 
-        if calcular_checksum(ALGORITMO_CHECKSUM_PADRAO, pacote["payload"]) != pacote["checksum"]:
+        if calcular_checksum_pacote(pacote) != pacote["checksum"]:
             print("Descartado: checksum invalido:", bruto)
             continue
 

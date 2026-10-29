@@ -23,7 +23,7 @@ def receber_dados(servidor):
 
 # recebe o pacote já separado em capos
 def checksum_confere(pacote):
-    esperado = protocol.calcular_checksum(config.ALGORITMO_CHECKSUM_PADRAO, pacote["payload"]) # recaucula o checksum do payload e compara com o que veio no pacote 
+    esperado = protocol.calcular_checksum_pacote(pacote) # recalcula o checksum do pacote (tipo, seq e payload) e compara com o que veio no pacote 
     return esperado == pacote["checksum"] # se for igual é true
 
 # recebe o pacote já decodificado em string
