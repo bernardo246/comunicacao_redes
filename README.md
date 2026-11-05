@@ -10,6 +10,7 @@
 <a href="https://docs.google.com/document/d/1c5e3sfxl6mpeFje5wGmIONTZkGtjTvkRjPFccinl5sM/edit?tab=t.0">
       <img src="https://img.shields.io/badge/Relatorio_IA_Checkpoint 2-blue?style=for-the-badge&logo=google-docs&logoColor=white" />
 </a>
+
 <a href="https://docs.google.com/document/d/10pi3DICbDcXQCscRuEF-UGoaWYMpCle-ioJwbnEk7Gc/edit?usp=sharing">
       <img src="https://img.shields.io/badge/Relatorio_IA_Checkpoint 3-blue?style=for-the-badge&logo=google-docs&logoColor=white" />
 </a>
@@ -43,8 +44,9 @@
 - seq — Qual número de sequência do pacote (pra ordenar e evitar duplicatas).
   Começa em `0` a cada mensagem.
 
-- checksum — Soma dos códigos ASCII do payload. Calculado em todo pacote e conferido
-  pelos dois lados: pacote com checksum errado é descartado.
+- checksum — Soma dos códigos ASCII do pacote como um todo (`tipo|seq|payload`, sem o
+  próprio campo do checksum). Calculado em todo pacote e conferido pelos dois lados: pacote
+  com checksum errado é descartado.
 
 - payload — O conteúdo/dado útil (parâmetros da sessão no handshake, até 4 caracteres da
   mensagem no `MSG`, vazio no `MSGFIM` e no `MSGACK`).
@@ -53,12 +55,14 @@
 # Checagem de integridade (checksum)
 
 Implementada **à mão** na função `calcular_checksum` do [protocol.py](protocol.py), sem
-biblioteca externa nem código pronto. Serve para detectar se o payload foi alterado no caminho.
+biblioteca externa nem código pronto. Serve para detectar se o pacote foi alterado no caminho.
+A função soma os códigos de uma string qualquer; `calcular_checksum_pacote` a aplica sobre o
+**pacote inteiro**, e não só sobre o payload.
 
 **Algoritmo `Ascii`:** soma o código ASCII de cada caractere do payload, usando só um laço e
 `ord()`.
 
-| Payload | Conta | Checksum |
+| String | Conta | Checksum |
 | :--- | :--- | :--- |
 | `ABC` | 65 + 66 + 67 | `198` |
 | `ola,` | 111 + 108 + 97 + 44 | `360` |
@@ -66,16 +70,33 @@ biblioteca externa nem código pronto. Serve para detectar se o payload foi alte
 
 **Como é usado:**
 
-1. **Quem envia** calcula o checksum do payload e o coloca no cabeçalho
-   (`tipo|seq|checksum|payload`). Isso vale para todo pacote: handshake, dados, `MSGFIM` e ACK.
-2. **Quem recebe** recalcula o checksum sobre o payload que chegou e compara com o do
-   cabeçalho. O resultado fica em `info["checksum_valido"]` (`parsear_pacote_data`).
+1. **Quem envia** monta a string `tipo|seq|payload`, calcula o checksum dela e grava o
+   resultado no cabeçalho (`tipo|seq|checksum|payload`). Isso é feito por
+   `montar_pacote_com_checksum`, usada por todos os `montar_*` do `protocol.py`: handshake,
+   dados, `MSGFIM` e ACK.
+2. **Quem recebe** refaz a mesma string `tipo|seq|payload` com o que chegou, recalcula o
+   checksum (`calcular_checksum_pacote`) e compara com o do cabeçalho. Para os dados, o
+   resultado fica em `info["checksum_valido"]` (`parsear_pacote_data`). O `server.py`
+   (`checksum_confere`) e o `client.py` conferem chamando essa mesma função.
 3. **Iguais:** o pacote está íntegro. **Diferentes:** o pacote foi corrompido e é
    descartado. Sem o ACK, o remetente retransmite pelo temporizador.
 
+**Por que o pacote inteiro:** se o checksum cobrisse só o payload, um bit errado no `seq`
+(o pacote 3 chegando como 8) ou no `tipo` (um `MSG` virando `MSGFIM`, que encerraria a
+mensagem antes da hora) passaria sem ser detectado. Agora qualquer alteração em `tipo`,
+`seq` ou `payload` muda o valor.
+
+**O campo do checksum fica de fora da conta.** Ele só existe depois de calculado, então não
+dá para somá-lo a si mesmo. Se o próprio campo for corrompido, o valor recalculado deixa de
+bater com ele, e o pacote também é descartado.
+
+Exemplo, para o pacote `MSG|0|887|ola,`: o checksum é a soma dos códigos da string
+`MSG|0|ola,`, que dá `887`.
+
 **Limitações:**
 
-- Pacotes sem payload (`MSGFIM`, `MSGACK`) têm checksum `0`.
+- Pacotes sem payload (`MSGFIM`, `MSGACK`) também têm checksum diferente de `0`, porque
+  `tipo` e `seq` entram na soma (`MSGFIM|3|750|`).
 - A soma não detecta erros que preservam o total, como a troca de ordem dos caracteres
   (`"ab"` e `"ba"` somam igual). O algoritmo é escolhido por `ALGORITMO_CHECKSUM_PADRAO` no
   `config.py`, fixo nos dois lados e não negociado no handshake. Para trocar por outro,
@@ -150,7 +171,8 @@ servidor: junta os pedaços → decifrar_mensagem → texto
 
 A mensagem é cifrada **inteira antes de fragmentar**, e decifrada **depois de remontada**,
 porque o RC4 precisa do fluxo completo e cada pacote leva só 4 caracteres. O checksum
-continua sendo calculado sobre o payload do pacote, que agora é um trecho do texto cifrado.
+continua sendo calculado sobre o pacote (`tipo|seq|payload`), cujo payload agora é um trecho do
+texto cifrado.
 
 **Erros tratados em `decifrar_mensagem`:** `ValueError` para caractere com código acima de
 255 (não pode ter saído de `cifrar_mensagem`) e para resultado que não seja UTF-8 (o que
@@ -258,7 +280,7 @@ Testam só a montagem/leitura dos pacotes. Não envolvem socket nenhum.
 python -c "import protocol; p=protocol.montar_handshake_request('GBN','LOTE',50); r=protocol.montar_handshake_ack('GBN','LOTE',50,5); print(p); print(protocol.parsear_handshake(p)); print(r); print(protocol.parsear_handshake(r))"
 ```
 
-Esperado: os pacotes `HS|0|712|GBN,LOTE,50` e `HSACK|0|809|GBN,LOTE,50,5`, cada um
+Esperado: os pacotes `HS|0|1163|GBN,LOTE,50` e `HSACK|0|1467|GBN,LOTE,50,5`, cada um
 seguido do dicionário com os campos separados.
 
 > Antes este teste era `python protocol.py`, que rodava um auto-teste embutido. Esse
@@ -314,7 +336,7 @@ python -c "import protocol,config; p=protocol.montar_handshake_request(config.GB
 
 Esperado:
 ```
-HS|0|710|GBN,LOTE,30
+HS|0|1161|GBN,LOTE,30
 {'tipo': 'HS', 'modo_retransmissao': 'GBN', 'tipo_envio': 'LOTE', 'tamanho_max_texto': 30}
 ```
 
@@ -327,7 +349,7 @@ python -c "import protocol,config; p=protocol.montar_handshake_ack(config.SR,con
 
 Esperado:
 ```
-HSACK|0|668|SR,IND,50,3
+HSACK|0|1326|SR,IND,50,3
 {'tipo': 'HSACK', 'modo_retransmissao': 'SR', 'tipo_envio': 'IND', 'tamanho_max_texto': 50, 'tamanho_janela': 3}
 ```
 
@@ -373,7 +395,7 @@ O mesmo teste pode ser feito pelo próprio cliente, sem `python -c`:
 python client.py --modo SR --envio IND --texto 77
 ```
 
-Esperado: `Handshake proposto ao servidor: HS|0|582|SR,IND,77` seguido do HSACK com
+Esperado: `Handshake proposto ao servidor: HS|0|1033|SR,IND,77` seguido do HSACK com
 `'modo_retransmissao': 'SR'`, `'tipo_envio': 'IND'`, `'tamanho_max_texto': 77`.
 
 **B5 — Parâmetros inválidos na linha de comando**
@@ -395,8 +417,8 @@ fim, e os pacotes saem de uma vez, até o tamanho da janela.
 python client.py "ola servidor"
 ```
 
-Esperado: os 4 pacotes (`MSG|0|348|ola `, `MSG|1|448|serv`, `MSG|2|430|idor`,
-`MSGFIM|3|0|`) enviados **antes** do primeiro ACK, depois `ACK do seq=0` a `ACK do seq=3`.
+Esperado: os 4 pacotes (`MSG|0|875|ola `, `MSG|1|976|serv`, `MSG|2|959|idor`,
+`MSGFIM|3|750|`) enviados **antes** do primeiro ACK, depois `ACK do seq=0` a `ACK do seq=3`.
 No Terminal 1, uma linha `DADOS ... valido=True` para cada pacote e, no fim,
 `MENSAGEM COMPLETA ... (3 pacotes, 12 caracteres): 'ola servidor'`.
 
@@ -435,7 +457,7 @@ python client.py "ola servidor" --envio IND
 ```
 
 Esperado: `Pacote enviado` e `ACK do seq=N recebido` **alternando**, terminando em
-`Pacote enviado: MSGFIM|3|0|` e `ACK do seq=3 recebido`. No Terminal 1,
+`Pacote enviado: MSGFIM|3|750|` e `ACK do seq=3 recebido`. No Terminal 1,
 `MENSAGEM COMPLETA ... 'ola servidor'`.
 
 **B11 — Envio com janela SR**
@@ -498,7 +520,7 @@ recebeu, o que respondeu e o motivo de cada descarte.
 python -c "import socket,protocol,config; s=socket.socket(socket.AF_INET,socket.SOCK_DGRAM); s.settimeout(3); s.sendto(protocol.montar_handshake_request('GBN','LOTE',5).encode(),(config.HOST,config.PORTA)); print(s.recvfrom(1024)[0].decode())"
 ```
 
-Esperado: `HSACK|0|807|GBN,LOTE,30,5` e, no Terminal 1,
+Esperado: `HSACK|0|1465|GBN,LOTE,30,5` e, no Terminal 1,
 `tamanho proposto (5) abaixo do minimo, ajustando para 30`.
 Pelo `client.py` o valor nem sai da máquina (ver B5).
 

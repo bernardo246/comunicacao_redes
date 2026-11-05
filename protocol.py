@@ -4,7 +4,7 @@ from config import *
 Formato de todo pacote: tipo|seq|checksum|payload
 - tipo: identifica a natureza do pacote (handshake, dado, ack, ...)
 - seq: número de sequência (0 no handshake, ainda não é usado)
-- checksum: soma dos códigos ASCII do payload (ver calcular_checksum)
+- checksum: soma dos códigos ASCII de "tipo|seq|payload" (ver calcular_checksum_pacote)
 - payload: conteúdo específico do tipo de pacote
  
 No handshake, o payload carrega os parâmetros da sessão, separados por vírgula:
@@ -17,6 +17,11 @@ def montar_pacote(tipo, seq, checksum, payload):
     # Monta a string final do pacote a partir dos campos do cabeçalho + payload.
     pacote = DELIM_CAMPO.join([tipo, str(seq), str(checksum), payload])
     return pacote
+
+def montar_pacote_com_checksum(tipo, seq, payload):
+    # Monta o pacote já calculando o checksum, que cobre tipo, seq e payload.
+    checksum = calcular_checksum_pacote({"tipo": tipo, "seq": seq, "payload": payload})
+    return montar_pacote(tipo, seq, checksum, payload)
 
 def parsear_pacote(pacote):
     #Quebra um pacote recebido em seus campos de cabeçalho + payload.
@@ -48,6 +53,19 @@ def calcular_checksum(algoritmo,payload):
         return soma
     else:
         raise ValueError("Algoritmo de checksum não suportado")
+
+def calcular_checksum_pacote(pacote):
+    '''
+    Calcula o checksum do pacote como um todo, e não só do payload. Recebe um dicionário
+    com "tipo", "seq" e "payload" (como o que parsear_pacote devolve) e aplica
+    calcular_checksum sobre a string "tipo|seq|payload".
+
+    O campo checksum fica de fora da conta, porque o valor ainda não existe na hora de
+    montar. Quem envia grava o resultado no cabeçalho; quem recebe recalcula do mesmo jeito
+    sobre o que chegou e compara. Assim, um bit errado em tipo, seq ou payload é detectado.
+    '''
+    base = DELIM_CAMPO.join([pacote["tipo"], str(pacote["seq"]), pacote["payload"]])
+    return calcular_checksum(ALGORITMO_CHECKSUM_PADRAO, base)
 
 #criptografia simetrica, implementada à mão (sem biblioteca externa)
 def criptografia_simetrica(chave, dados):
@@ -116,14 +134,12 @@ def decifrar_mensagem(chave, texto_cifrado):
 def montar_handshake_request(modo_retransmissao, tipo_envio, tamanho_max_texto):
     """Cliente -> servidor: propõe modo de retransmissão, tipo de envio e tamanho máximo do texto."""
     payload = DELIM_PAYLOAD.join([modo_retransmissao, tipo_envio, str(tamanho_max_texto)])
-    checksum = calcular_checksum(ALGORITMO_CHECKSUM_PADRAO, payload)  # mensagens de controle tambem precisam de checksum, mesmo que nao carreguem texto do usuario
-    return montar_pacote(TYPE_HANDSHAKE_REQ, 0, checksum, payload)
+    return montar_pacote_com_checksum(TYPE_HANDSHAKE_REQ, 0, payload)  # mensagens de controle tambem precisam de checksum, mesmo que nao carreguem texto do usuario
 
 def montar_handshake_ack(modo_retransmissao, tipo_envio, tamanho_max_texto, tamanho_janela):
     """Servidor -> cliente: confirma os parâmetros e informa o tamanho da janela."""
     payload = DELIM_PAYLOAD.join([modo_retransmissao, tipo_envio, str(tamanho_max_texto), str(tamanho_janela)])
-    checksum = calcular_checksum(ALGORITMO_CHECKSUM_PADRAO, payload)
-    return montar_pacote(TYPE_HANDSHAKE_ACK, 0, checksum, payload)
+    return montar_pacote_com_checksum(TYPE_HANDSHAKE_ACK, 0, payload)
 
 def parsear_handshake(bruto):
     """Extrai os campos de uma mensagem de handshake (request ou ack)."""
@@ -150,14 +166,12 @@ def fragmentar_texto(string):
     return lista_de_payload
 
 def montar_pacote_data(seq,payload):
-    checksum = calcular_checksum(ALGORITMO_CHECKSUM_PADRAO, payload)
-    pacote= montar_pacote(TYPE_DATA,seq,checksum,payload)
+    pacote = montar_pacote_com_checksum(TYPE_DATA, seq, payload)
     return pacote
 
 def montar_pacote_fim(seq):
     """Pacote de payload vazio que sinaliza o fim da mensagem; entra na fila como um DATA qualquer."""
-    checksum = calcular_checksum(ALGORITMO_CHECKSUM_PADRAO, "")
-    return montar_pacote(TYPE_FIM, seq, checksum, "")
+    return montar_pacote_com_checksum(TYPE_FIM, seq, "")
 
 def montar_pacotes_mensagem(texto):
     """Fragmenta o texto e devolve a lista de pacotes, com o pacote FIM na última posição."""
@@ -169,14 +183,13 @@ def montar_pacotes_mensagem(texto):
 
 def parsear_pacote_data(pacote_bruto):
     pacote = parsear_pacote(pacote_bruto)
-    checksum_esperado = calcular_checksum(ALGORITMO_CHECKSUM_PADRAO, pacote["payload"])
+    checksum_esperado = calcular_checksum_pacote(pacote)
     pacote["checksum_valido"] = (checksum_esperado == pacote["checksum"])
     pacote["ultimo"] = (pacote["tipo"] == TYPE_FIM)  # sinal de fim de mensagem para o server/client
     return pacote
 
 def montar_ack(seq):
-    checksum = calcular_checksum(ALGORITMO_CHECKSUM_PADRAO, "")
-    return montar_pacote(TYPE_DATA_ACK, seq, checksum, "")
+    return montar_pacote_com_checksum(TYPE_DATA_ACK, seq, "")
 
 def parsear_ack(packege):
     return parsear_pacote(packege)
