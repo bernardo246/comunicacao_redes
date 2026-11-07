@@ -1,4 +1,6 @@
 # montar as regras de comunicação + pacote
+import random
+import config  # lido em tempo de execução por simular_canal (permite mudar os valores sem reiniciar)
 from config import *
 """
 Formato de todo pacote: tipo|seq|checksum|payload
@@ -194,3 +196,66 @@ def montar_ack(seq):
 def parsear_ack(packege):
     return parsear_pacote(packege)
 
+
+# Simulação de falhas do canal (perda e corrupção de pacotes)
+_ja_perdidos = set()      # (tipo, seq) que já foram perdidos uma vez pela lista SEQS_PERDIDOS
+_ja_corrompidos = set()   # (tipo, seq) que já foram corrompidos uma vez pela lista SEQS_CORROMPIDOS
+
+def reiniciar_simulacao():
+    """Esquece quais pacotes já foram afetados, para que as listas SEQS_* valham de novo."""
+    _ja_perdidos.clear()
+    _ja_corrompidos.clear()
+
+def _corromper_pacote(pacote_str):
+    # Inverte o bit menos significativo de um caractere sorteado, como um erro de transmissão.
+    # Nunca sorteia um "|" nem gera um "|" como resultado: assim o número de campos não muda e
+    # o erro cai no checksum, em vez de virar um pacote com formato quebrado.
+    posicoes = [i for i, c in enumerate(pacote_str) if c != DELIM_CAMPO]
+    if not posicoes:
+        return pacote_str
+    posicao = random.choice(posicoes)
+    codigo = ord(pacote_str[posicao])
+    novo = codigo ^ 1
+    if chr(novo) == DELIM_CAMPO:
+        novo = codigo ^ 2
+    return pacote_str[:posicao] + chr(novo) + pacote_str[posicao + 1:]
+
+def simular_canal(pacote_str):
+    """
+    Devolve o pacote (possivelmente corrompido) ou None se ele foi perdido.
+
+    Deve ser chamada sobre a string do pacote antes de enviá-lo. Quem recebe None não envia
+    nada; quem recebe uma string envia essa string, que pode ter um caractere alterado.
+
+    A perda tem prioridade sobre a corrupção. Dois mecanismos, que podem ser combinados:
+    - determinístico: config.SEQS_PERDIDOS e config.SEQS_CORROMPIDOS afetam o pacote de
+      cada seq listado só na 1ª vez (as retransmissões passam), para a demonstração ter
+      um resultado previsível. A conta é por (tipo, seq): perder o seq 1 perde uma vez o
+      MSG|1 e uma vez o MSGACK|1. O seq 0 vale também para HS e HSACK.
+    - probabilístico: config.PROB_PERDA e config.PROB_CORRUPCAO, sorteados a cada pacote.
+
+    Pacote que não dá para ler (lixo) não tem seq, então só entra no sorteio por probabilidade.
+    Com a configuração padrão (tudo zerado) devolve o pacote sem alterar.
+    """
+    chave = None
+    try:
+        campos = pacote_str.split(DELIM_CAMPO, 3)
+        chave = (campos[0], int(campos[1]))      # (tipo, seq)
+    except (ValueError, IndexError):
+        pass
+
+    # perda
+    if chave is not None and chave[1] in config.SEQS_PERDIDOS and chave not in _ja_perdidos:
+        _ja_perdidos.add(chave)
+        return None
+    if random.random() < config.PROB_PERDA:
+        return None
+
+    # corrupção
+    if chave is not None and chave[1] in config.SEQS_CORROMPIDOS and chave not in _ja_corrompidos:
+        _ja_corrompidos.add(chave)
+        return _corromper_pacote(pacote_str)
+    if random.random() < config.PROB_CORRUPCAO:
+        return _corromper_pacote(pacote_str)
+
+    return pacote_str

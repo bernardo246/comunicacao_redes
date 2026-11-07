@@ -66,3 +66,11 @@ CHECKSUM_ASCII = "Ascii"
 MODO_PADRAO = GBN                          # retransmissao: GBN ou SR
 ENVIO_PADRAO = MODO_LOTE                   # envio: LOTE ou INDIVIDUAL
 ALGORITMO_CHECKSUM_PADRAO = CHECKSUM_ASCII # algoritmo do checksum
+
+# ---------------------------------------------------------------- simulacao de falhas
+# Usadas por protocol.simular_canal, que decide o destino de cada pacote enviado:
+# entregue, perdido ou corrompido. Com os valores abaixo (padrao) nada e alterado.
+PROB_PERDA = 0.0          # chance de um pacote não ser entregue
+PROB_CORRUPCAO = 0.0      # chance de um caractere do pacote ser alterado
+SEQS_PERDIDOS = []        # alternativa determinística: perde estes seq (na 1ª tentativa)
+SEQS_CORROMPIDOS = []     # alternativa determinística: corrompe estes seq

@@ -193,6 +193,79 @@ UTF-8 válido).
 
 ---
 
+# Simulação de erros e perdas
+
+Para demonstrar que o protocolo se recupera de falhas, o `protocol.py` tem uma função que
+simula um canal ruim: cada pacote que seria enviado passa por ela e pode ser entregue,
+perdido ou corrompido. Com a configuração padrão (tudo zerado) ela não altera nada.
+
+## O que cada função faz
+
+- **`simular_canal(pacote_str)`** devolve a string do pacote, com um caractere alterado se
+  ele foi corrompido, ou `None` se foi perdido. A perda tem prioridade sobre a corrupção:
+  um pacote perdido não chega a ser corrompido.
+  - Quem recebe `None` **não envia nada**, como se o pacote tivesse sumido na rede.
+  - Quem recebe uma string envia essa string, que pode ser o pacote original ou o pacote
+    com um caractere alterado.
+- **`reiniciar_simulacao()`** faz as listas `SEQS_*` valerem de novo. A função lembra quais
+  pacotes já foram afetados (ver "1ª tentativa" abaixo), e essa chamada apaga essa memória.
+- **`_corromper_pacote(pacote_str)`** (interna, chamada por `simular_canal`) inverte um bit de
+  um caractere sorteado, como um erro de transmissão real. Por exemplo, o `3` (código 51)
+  vira `2` (código 50). Nunca sorteia um `|`, nem gera um, para o número de campos do pacote
+  não mudar: assim o erro cai no checksum e o pacote é descartado como "checksum inválido".
+
+## Como configurar (`config.py`)
+
+| Constante | Padrão | O que faz |
+| :--- | :--- | :--- |
+| `PROB_PERDA` | `0.0` | Chance (de 0 a 1) de cada pacote ser perdido. `0.2` perde cerca de 1 a cada 5. |
+| `PROB_CORRUPCAO` | `0.0` | Chance (de 0 a 1) de cada pacote ter um caractere alterado. |
+| `SEQS_PERDIDOS` | `[]` | Lista de `seq` que são perdidos **na 1ª tentativa**. Ex.: `[1, 3]`. |
+| `SEQS_CORROMPIDOS` | `[]` | Lista de `seq` que são corrompidos **na 1ª tentativa**. |
+
+Os dois jeitos podem ser combinados, e servem para coisas diferentes:
+
+- **Probabilidade** mostra o comportamento geral com muitos pacotes. O resultado muda a
+  cada execução.
+- **Lista de `seq`** é determinística: para ver exatamente "o pacote 1 foi perdido" e
+  o que o protocolo faz.
+
+## Como funciona a "1ª tentativa"
+
+Cada seq listado em `SEQS_PERDIDOS` ou `SEQS_CORROMPIDOS` é afetado **uma vez só**. A
+retransmissão do mesmo pacote passa normalmente, senão o protocolo nunca se recuperaria e
+a demonstração travaria.
+
+A conta é por **tipo e seq**, e não só por seq. Com `SEQS_PERDIDOS = [1]`:
+
+- o primeiro `MSG|1` é perdido (perda de **dado**);
+- o primeiro `MSGACK|1` também é perdido (perda de **ACK**), cada um uma vez;
+- o `seq` 0 vale também para o `HS` e o `HSACK` do handshake.
+
+## O que cada falha provoca
+
+| Situação | Como simular | O que o protocolo faz |
+| :--- | :--- | :--- |
+| Dado perdido | `SEQS_PERDIDOS = [1]` (no `MSG`) | O temporizador do remetente estoura e ele retransmite. |
+| ACK perdido | `SEQS_PERDIDOS = [1]` (no `MSGACK`) | O remetente retransmite o dado, e o receptor reconhece o duplicado. |
+| Dado ou ACK corrompido | `SEQS_CORROMPIDOS = [1]` | O checksum não bate, o pacote é descartado e o remetente retransmite. |
+| Falhas em volume | `PROB_PERDA = 0.2`, `PROB_CORRUPCAO = 0.1` | Todos os casos acima acontecem de forma aleatória. |
+
+## Exemplo de uso
+
+A função é chamada sobre a string do pacote, logo antes de enviá-lo:
+
+```python
+pacote = simular_canal(pacote)
+if pacote is not None:          # None = o pacote foi perdido, não envia
+    sock.sendto(pacote.encode(ENCODING), destino)
+```
+
+> Essa chamada precisa estar no `client.py` e no `server.py` em cada envio. Enquanto não
+> estiver, as constantes do `config.py` não têm efeito.
+
+---
+
 # Variáveis de configuração (Handshake)
 
 - **modo** — Modo de operação: envio individual/lote + confirmação GBN/SR.
