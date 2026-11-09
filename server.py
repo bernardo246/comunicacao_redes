@@ -255,7 +255,8 @@ def tratar_dados(servidor, endereco_cliente, info, sessoes):
     else:
         proximo = sessao["base"] # SR primeiro seq que ainda nao foi entregue
 
-    if sessao["seq_final"] is not None and proximo > sessao["seq_final"]:
+    # so finaliza uma vez
+    if not sessao["concluida"] and sessao["seq_final"] is not None and proximo > sessao["seq_final"]:
         finalizar_mensagem(endereco_cliente, sessao)
 
 # junta os payloads mostra a mensagem completa
@@ -265,12 +266,10 @@ def finalizar_mensagem(endereco_cliente, sessao):
     print(f"[servidor] MENSAGEM COMPLETA de {endereco_cliente} "
           f"({sessao['seq_final']} pacotes, {len(texto)} caracteres): {texto!r}")
 
-    # zera a sessao para a proxima mensagem (o seq recomeça em 0)
-    sessao["recebidos"] = []
-    sessao["buffer"] = {}
-    sessao["seq_esperado"] = 0
-    sessao["base"] = 0
-    sessao["seq_final"] = None
+    # CP3: não zera mais a sessao. Se o ACK do MSGFIM se perder, o cliente reenvia o
+    # MSGFIM. Mantendo 
+    # Uma mensagem nova exige um handshake novo, que recria a sessao (tratar_handshake).
+    sessao["concluida"] = True
 
 def encerrar_servidor(servidor):
     servidor.close()
