@@ -108,6 +108,7 @@ def criar_sessao(parametros):
         "buffer": {}, # usados pelo SR
         "recebidos": [], # os payloads já entregues em ordem
         "seq_final": None,  # o seq do MSGFIM, preenchido quando ele cheg
+        "concluida": False, # vira True quando a mensagem foi montada e impressa
     }
 
 # antes ficava na main
