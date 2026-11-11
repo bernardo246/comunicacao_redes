@@ -7,20 +7,9 @@ import config
 import socket
 import protocol
 
-# No CP1 o servidor só respondia handshakes e não guardava nada. 
-# No CP2 ele virou um receptor completo: guarda uma sessão por cliente, recebe os pacotes de dados, confere checksum e ordem, confirma com ACK nos modos GBN e SR, e remonta e imprime a mensagem completa.
-
-# MUDANÇAS: 
-# processar_pacotes: de “só handshake” para “qualquer tipo”
-# Sessões (criar_sessao e o dicionário sessoes)
-# tratar_handshake
-# enviar_ack
-# receber_gbn 
-# receber_sr
-# tratar_dados: a porta de entrada dos dados
-# finalizar_mensagem
-# main: de fluxo único para roteador
-
+# CP3: reconhecimento negativo (exigido pelo enunciado). Pacote de controle sem payload,
+# com o mesmo formato tipo|seq|checksum|payload dos outros.
+TYPE_NACK = "MSGNACK"
 
 # cria o socket do servidor e deixa ele pronto pra receber dados
 def iniciar_servidor(host, porta):
@@ -158,6 +147,13 @@ def enviar_ack(servidor, endereco_cliente, seq):
     ack = protocol.montar_ack(seq)                 # protocol monta a ack
     enviar_pacote(servidor, endereco_cliente, ack) # passa pelo canal simulado antes de sair
 
+# avisa o cliente que um pacote chegou corrompido 
+# O seq do pacote corrompido nao e confiavel
+# entao quem chama passa um seq que vem do estado do proprio servidor.
+def enviar_nack(servidor, endereco_cliente, seq):
+    nack = protocol.montar_pacote_com_checksum(TYPE_NACK, seq, "")
+    enviar_pacote(servidor, endereco_cliente, nack)
+
 #lado receptor do Go-Back-N. 
 # O servidor só aceita o pacote que vem exatamente na vez dele, 
 # não guarda nada fora de ordem e, quando descarta algo, 
@@ -174,14 +170,14 @@ def receber_gbn(servidor, endereco_cliente, sessao, info):
         sessao["seq_esperado"] += 1   # passa a esperar o proximo            
         return
 
-    # checksum invalido pacote vai ser descartado
-    # uma das duas condições estava errada
-    # so verifica qual foi o erro
+    # checksum invalido: descarta e manda NACK do seq que o servidor esta esperando
     if not info["checksum_valido"]:
-        motivo = "checksum invalido"
-    else:
-        motivo = f"fora de ordem (esperado {sessao['seq_esperado']})"
-    print(f"[servidor] GBN: seq={seq} descartado, {motivo}")
+        print(f"[servidor] GBN: seq={seq} descartado, checksum invalido")
+        enviar_nack(servidor, endereco_cliente, sessao["seq_esperado"])
+        return
+
+    # chegou aqui: checksum certo, mas fora de ordem
+    print(f"[servidor] GBN: seq={seq} descartado, fora de ordem (esperado {sessao['seq_esperado']})")
 
  
     # “Essa linha só roda quando o pacote é descartado, 
@@ -203,6 +199,7 @@ def receber_sr(servidor, endereco_cliente, sessao, info):
     # o timer dele estoura e o cliente reenvia só ele.
     if not info["checksum_valido"]:
         print(f"[servidor] SR: seq={seq} descartado, checksum invalido")
+        enviar_nack(servidor, endereco_cliente, base) # base = primeiro seq ainda nao entregue
         return
 
     # verifica se está na dentro da janela
@@ -317,12 +314,11 @@ def main():
                 continue
 
             # ja chegou
-            print(f"[servidor] recebido de {endereco_cliente}: {dados}")
+            print(f"[servidor] recebido de {endereco_cliente}: {dados!r}")
 
             # O processar_pacotes faz o parse genérico e 
             # depois o específico. 
             # Se o pacote estiver fora do formato 
-            # aparecem estes erros:
             # ValueError: veio com menos de 4 campos, ou o seq ou o checksum não são números
             # IndexError: um HS com campos faltando no payload.S
             try:
