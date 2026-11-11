@@ -277,8 +277,14 @@ def tratar_dados(servidor, endereco_cliente, info, sessoes):
 def finalizar_mensagem(endereco_cliente, sessao):
     texto = "".join(sessao["recebidos"])
 
-    print(f"[servidor] MENSAGEM COMPLETA de {endereco_cliente} "
-          f"({sessao['seq_final']} pacotes, {len(texto)} caracteres): {texto!r}")
+    #a mensagem chega cifrada (RC4) e so pode ser decifrada inteira,
+    # depois de remontada, porque o RC4 depende do fluxo completo.
+    # ValueError: chave errada ou mensagem que nao foi cifrada
+    try:
+        decifrado = protocol.decifrar_mensagem(config.CHAVE_CRIPTOGRAFIA, texto)
+        print(f"[servidor] MENSAGEM DECIFRADA de {endereco_cliente}: {decifrado!r}")
+    except ValueError as erro:
+        print(f"[servidor] nao foi possivel decifrar a mensagem de {endereco_cliente}: {erro}")
 
     # CP3: não zera mais a sessao. Se o ACK do MSGFIM se perder, o cliente reenvia o
     # MSGFIM. Mantendo 
