@@ -36,6 +36,25 @@ def receber_dados(servidor):
     pacote = dados.decode(config.ENCODING) # decodifica de bytes para string
     return endereco_cliente,pacote
 
+# Antes de enviar, o pacote atravessa o canal simulado (protocol.simular_canal),
+# devolve o pacote intacto, corrompido ou perdido.
+# Retorna True se algo foi enviado e False se o pacote foi perdido.
+def enviar_pacote(servidor, endereco_cliente, pacote):
+    resultado = protocol.simular_canal(pacote)
+
+    # perdido: nao chama o sendto, como se o pacote sumisse na rede
+    if resultado is None:
+        print(f"[servidor] [SIMULACAO] PERDIDO, nao enviado para {endereco_cliente}: {pacote!r}")
+        return False
+
+    # corrompido: o canal trocou um caractere, envia mesmo assim 
+    if resultado != pacote:
+        print(f"[servidor] [SIMULACAO] CORROMPIDO: {pacote!r} -> {resultado!r}")
+
+    servidor.sendto(resultado.encode(config.ENCODING), endereco_cliente) # codifica para bytes e envia
+    print(f"[servidor] enviado para {endereco_cliente}: {resultado!r}")
+    return True
+
 # recebe o pacote já separado em capos
 def checksum_confere(pacote):
     esperado = protocol.calcular_checksum_pacote(pacote) # recalcula o checksum do pacote (tipo, seq e payload) e compara com o que veio no pacote 
@@ -91,9 +110,8 @@ def validar_parametros(dados):
 def responder_handshake(servidor,endereco_cliente,parametros):
     ack = protocol.montar_handshake_ack(parametros["modo_retransmissao"], parametros["tipo_envio"],parametros["tamanho_max_texto"], parametros["tamanho_janela"])
 
-    ack_bytes = ack.encode(config.ENCODING)
+    enviar_pacote(servidor, endereco_cliente, ack) # passa pelo canal simulado antes de sair
 
-    servidor.sendto(ack_bytes, endereco_cliente)
     return ack
 
 #Evitar falar
@@ -125,10 +143,7 @@ def tratar_handshake(servidor, endereco_cliente, info, sessoes):
         print(f"[servidor] HS de {endereco_cliente} recusado: {motivo}")
         return
 
-    # monta e envia o hsack para o cliente com os parametros acietos
-    #Responde com o HSACK
-    ack = responder_handshake(servidor, endereco_cliente, parametros)
-    print(f"[servidor] enviado para {endereco_cliente}: {ack}")
+    responder_handshake(servidor, endereco_cliente, parametros)
 
     # Verifica se o endereço ja tem uma sessao aberta
     # criar ou reiniciar a sessão
@@ -140,9 +155,8 @@ def tratar_handshake(servidor, endereco_cliente, info, sessoes):
 
 # recebe o socket,destino e seq
 def enviar_ack(servidor, endereco_cliente, seq):
-    ack = protocol.montar_ack(seq)                         # protocol monta a ack
-    servidor.sendto(ack.encode(config.ENCODING), endereco_cliente) # codifica para bytes e envia os bytes para o endereço
-    print(f"[servidor] ACK enviado para {endereco_cliente}: {ack}")
+    ack = protocol.montar_ack(seq)                 # protocol monta a ack
+    enviar_pacote(servidor, endereco_cliente, ack) # passa pelo canal simulado antes de sair
 
 #lado receptor do Go-Back-N. 
 # O servidor só aceita o pacote que vem exatamente na vez dele, 
