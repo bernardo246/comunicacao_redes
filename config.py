@@ -74,3 +74,4 @@ PROB_PERDA = 0.0          # chance de um pacote não ser entregue
 PROB_CORRUPCAO = 0.0      # chance de um caractere do pacote ser alterado
 SEQS_PERDIDOS = []        # alternativa determinística: perde estes seq (na 1ª tentativa)
 SEQS_CORROMPIDOS = []     # alternativa determinística: corrompe estes seq
+CHAVE_CRIPTOGRAFIA = "redes2026"
