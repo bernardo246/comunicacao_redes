@@ -9,7 +9,7 @@ import protocol
 
 # CP3: reconhecimento negativo (exigido pelo enunciado). Pacote de controle sem payload,
 # com o mesmo formato tipo|seq|checksum|payload dos outros.
-TYPE_NACK = "MSGNACK"
+TYPE_NACK = config.TYPE_NACK  # definido no config.py, para o cliente tambem conhecer
 
 # cria o socket do servidor e deixa ele pronto pra receber dados
 def iniciar_servidor(host, porta):
