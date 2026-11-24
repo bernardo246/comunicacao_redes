@@ -65,7 +65,7 @@ função já levanta `ValueError` para algoritmo desconhecido.
 a string `tipo|seq|payload`. Assim, um caractere errado no `tipo` ou no `seq` também é
 detectado (antes, um `seq` 3 que chegasse como 8 passaria sem ser percebido). O campo do
 checksum fica de fora da conta, porque ele só existe depois de calculado. Por isso pacotes
-sem payload também têm checksum diferente de zero: `MSGACK|0|734|`, `MSGFIM|8|755|`.
+sem payload também têm checksum diferente de zero, como o `MSGFIM|8|755|`.
 
 Quem envia grava o valor no cabeçalho; quem recebe recalcula sobre o que chegou e compara.
 Diferente → pacote corrompido. O servidor confere todo `HS` e todo dado; o cliente confere
@@ -108,6 +108,36 @@ servidor → cliente : HSACK|0|1465|GBN,LOTE,30,5
 
 O `tamanho_janela` não vai no `HS`: pelo enunciado, a janela é a janela de recepção do
 servidor e é ele quem a determina. O cliente descobre o valor ao ler o `HSACK`.
+
+**Janela inicial.** O valor do `HSACK` vem da constante `JANELA` do `config.py` (padrão `5`,
+como pede o enunciado). Para começar com outra janela, basta trocar o valor (de 1 a 5) e
+reiniciar o servidor. Com `JANELA = 2`, por exemplo, o `HSACK` vem como `GBN,LOTE,30,2` e o
+cliente manda 2 pacotes antes do primeiro ACK, em vez de 5. Um valor fora da faixa (ex.: `7`)
+é recusado pelo cliente: `Erro: HSACK recusado: janela 7 fora da faixa 1 a 5.`
+
+**A janela varia durante a comunicação (CP3).** O enunciado diz que a janela "vai variar de
+1 a 5, sendo determinado pelo servidor e com valor inicial de 5". A regra do servidor é
+simples (`ajustar_janela` no `server.py`):
+
+- **descartou um pacote** (corrompido ou fora de ordem) → a janela **diminui 1**;
+- **aceitou um pacote** novo → a janela **aumenta 1**;
+- sempre entre `JANELA_MIN` (1) e `JANELA_MAX` (5).
+
+A sessão guarda a janela atual, e **cada `MSGACK` e `MSGNACK` leva essa janela no payload**
+(ex.: `MSGACK|3|789|4` = "recebi o 3, a janela agora é 4"). O cliente lê o valor de cada
+ACK/NACK que aceita (`janela_do_servidor` no `client.py`) e passa a encher a janela com o
+novo tamanho; valores fora de 1–5 são ignorados. Os dois lados registram a mudança no log:
+`[servidor] janela: 5 -> 4` e `Janela: 5 -> 4 (definida pelo servidor)`.
+
+Exemplo real (`--modo GBN --perder 2`): o servidor descartou o 3, 4, 5 e 6 por estarem fora
+de ordem e a janela caiu de 5 para 1; depois do reenvio, cada pacote aceito a fez subir de
+volta (1 → 2 → 3 → 4 → 5). No SR uma perda não muda a janela, porque o servidor guarda os
+pacotes fora de ordem em vez de descartá-los; só a corrupção a diminui.
+
+**Janela anunciada × janela de recepção no SR.** Para *aceitar* pacotes no buffer, o
+servidor SR usa sempre o máximo (5). A janela que varia é a que ele *anuncia* ao cliente.
+Se a janela de recepção encolhesse, pacotes que o cliente já enviou com a janela antiga
+cairiam fora dela e seriam descartados à toa.
 
 ### 2.5 Regras de decisão do servidor
 
@@ -234,8 +264,8 @@ Depois do handshake, o cliente envia a mensagem usando estes tipos de pacote:
 | :--- | :--- | :--- | :--- |
 | `MSG` | cliente | `MSG\|<seq>\|<checksum>\|<até 4 caracteres>` | um pedaço da mensagem (cifrada) |
 | `MSGFIM` | cliente | `MSGFIM\|<seq>\|<checksum>\|` (payload vazio) | marca o fim da mensagem; é sempre o último pacote |
-| `MSGACK` | servidor | `MSGACK\|<seq>\|<checksum>\|` (payload vazio) | reconhecimento positivo: o pacote `seq` chegou íntegro e foi aceito |
-| `MSGNACK` | servidor | `MSGNACK\|<seq>\|<checksum>\|` (payload vazio) | reconhecimento negativo: chegou um pacote corrompido; reenviar a partir de `seq` (CP3, ver 2.12) |
+| `MSGACK` | servidor | `MSGACK\|<seq>\|<checksum>\|<janela>` | reconhecimento positivo: o pacote `seq` chegou íntegro e foi aceito; o payload leva a janela atual do servidor (ver 2.4) |
+| `MSGNACK` | servidor | `MSGNACK\|<seq>\|<checksum>\|<janela>` | reconhecimento negativo: chegou um pacote corrompido; reenviar a partir de `seq` (CP3, ver 2.12); o payload leva a janela atual |
 
 (Nas tabelas, o `|` aparece como `\|` por causa da formatação do Markdown.)
 
@@ -273,7 +303,9 @@ servidor **confirmou** no `HSACK`, e não a partir dos argumentos digitados:
 | `LOTE` | `GBN` | `enviar_gbn` | até `tamanho_janela` pacotes em voo, ACK cumulativo, um timer só |
 | `LOTE` | `SR` | `enviar_sr` | até `tamanho_janela` pacotes em voo, ACK individual, um timer por pacote |
 
-A janela é definida pelo servidor no `HSACK` (hoje, `JANELA_INICIAL = 5`).
+A janela inicial vem no `HSACK` (a constante `JANELA` do `config.py`, padrão `5`). Depois, a
+cada ACK ou NACK aceito, o GBN e o SR atualizam a janela com o valor que veio no payload
+(ver 2.4).
 
 Nos três modos, depois de cada espera há sempre os mesmos três casos: **timeout** (nada
 chegou: reenvia), **NACK** (chegou estragado: reenvia imediatamente, sem esperar o timer) e
@@ -327,10 +359,14 @@ sessão:
   `MSGNACK <seq_esperado>`. Pacote íntegro fora de ordem (ou duplicado) é descartado e o
   servidor repete o ACK do último pacote aceito em ordem. Não há buffer.
 - **SR (`receber_sr`):** pacote corrompido é descartado e o servidor manda
-  `MSGNACK <base>`. Pacote dentro da janela `[base, base + janela)` recebe ACK individual e
-  vai para um buffer; quando o pacote da base chega, o servidor entrega em ordem tudo o que
-  estava no buffer e a janela anda. Pacote da janela anterior (duplicado, porque o ACK dele
-  se perdeu) recebe o ACK de novo, sem ser guardado outra vez.
+  `MSGNACK <base>`. Pacote dentro da janela de recepção `[base, base + 5)` recebe ACK
+  individual e vai para um buffer; quando o pacote da base chega, o servidor entrega em
+  ordem tudo o que estava no buffer e a janela anda. Pacote da janela anterior (duplicado,
+  porque o ACK dele se perdeu) recebe o ACK de novo, sem ser guardado outra vez.
+
+Nos dois modos, antes de responder, o servidor ajusta a janela da sessão (diminui 1 se
+descartou o pacote, aumenta 1 se aceitou um pacote novo) e manda o valor atual no payload
+do ACK/NACK (ver 2.4).
 
 Quando todos os pacotes até o `MSGFIM` foram entregues em ordem, `finalizar_mensagem` junta
 os payloads, **decifra** a mensagem (RC4) e imprime `MENSAGEM DECIFRADA`. A sessão **não é
@@ -367,7 +403,8 @@ Comportamento no cliente:
 
 Exemplo real (`--modo GBN --corromper 2`): a corrupção trocou um dígito do checksum
 (`MSG|2|1184|...` → `MSG|2|1084|...`), o servidor registrou `GBN: seq=2 descartado,
-checksum invalido` e respondeu `MSGNACK|2|814|`; o cliente imprimiu `NACK do seq=2,
+checksum invalido`, diminuiu a janela para 4 e respondeu `MSGNACK|2|866|4`; o cliente
+imprimiu `NACK do seq=2,
 reenviando a partir dele imediatamente...` e a mensagem completou em 0,1 s (com o mesmo
 pacote perdido, em vez de corrompido, levou 1,2 s, por causa do timer).
 
@@ -465,7 +502,7 @@ Sem essas opções, o canal é limpo (o comportamento do CP2).
 | Número de sequência | Usado nos dados: começa em `0` a cada mensagem, ordena os pacotes no servidor, identifica qual pacote cada ACK/NACK se refere e permite reconhecer duplicados. | qualquer execução; com perda, o servidor registra `fora de ordem (esperado N)` |
 | Reconhecimento positivo | `HSACK` confirma o handshake; `MSGACK` confirma cada pacote de dados (cumulativo no GBN, individual no SR). | qualquer execução: `ACK do seq=N recebido` |
 | Reconhecimento negativo | `MSGNACK` quando um dado chega corrompido; o cliente reenvia imediatamente, sem esperar o timer (ver 2.12). | `--corromper N`: `NACK do seq=N, reenviando ... imediatamente` |
-| Janela / paralelismo | Definida pelo servidor no `HSACK` (1–5, inicial 5) e usada no envio GBN e SR: até `tamanho_janela` pacotes em voo. | `--modo GBN` / `--modo SR`: 5 pacotes enviados antes do primeiro ACK |
+| Janela / paralelismo | Determinada pelo servidor: começa em 5 (`HSACK`) e varia de 1 a 5 durante a comunicação (−1 a cada pacote descartado, +1 a cada aceito), informada em cada ACK/NACK. Usada no envio GBN e SR: até `janela` pacotes em voo. | `--modo GBN`: 5 pacotes antes do 1º ACK; com `--perder 2`, `Janela: 5 -> 2 ... -> 5` no cliente e `janela: 5 -> 4` no servidor |
 
 ---
 
@@ -563,6 +600,8 @@ com `Mensagem enviada e confirmada pelo servidor.` (código 0) e o servidor impr
 | SR `--perder 0` | `HS` perdido e reenviado; depois `MSG 0` perdido, a janela fica parada até o reenvio dele |
 | GBN `--perder 8` | `MSGFIM` perdido; timeout e reenvio; o servidor finaliza |
 | GBN `--perder 1,6 --corromper 3` e SR `--perder 0,8 --corromper 4` | falhas combinadas, todas recuperadas |
+| Janela variável (GBN `--perder 2`, GBN `--corromper 1,2,3,4,5`) | o servidor diminui a janela a cada descarte (até 1) e aumenta a cada aceite (até 5); o cliente acompanha pelo payload dos ACKs (`Janela: 5 -> 2`, `2 -> 3`, ..., `4 -> 5`) |
+| `JANELA` inicial 1, 2 e 5 no `config.py`; 7 (inválida) | o cliente manda exatamente 1, 2 e 5 pacotes antes do 1º ACK; com 7, recusa o `HSACK` |
 
 ### 5.2 Bateria automatizada do Checkpoint 2 (`testes.py`)
 
@@ -771,6 +810,14 @@ Casos encontrados no Checkpoint 3:
     cmd, o `#` virou um argumento a mais e o `argparse` recusou
     (`unrecognized arguments: # canal limpo`). *Correção:* o roteiro do manual (seção 4) não
     tem comentários na linha de comando.
+17. **Janela variável: leitura do enunciado.** Na revisão final, o grupo perguntou se a
+    janela precisava mudar. A IA releu o enunciado e apontou que o texto é ambíguo ("vai
+    variar de 1 a 5 ... com valor inicial de 5"): pode ser só a faixa permitida, mas a palavra
+    "inicial" sugere mudança durante a comunicação. O grupo decidiu implementar a versão
+    dinâmica, de forma simples (−1 por descarte, +1 por aceite, janela no payload do ACK). A
+    IA alertou para um problema no SR: encolher a janela de *recepção* faria o servidor
+    descartar pacotes já enviados com a janela antiga; por isso o servidor aceita sempre até 5
+    e varia só a janela *anunciada*. A mudança foi validada de novo com todos os cenários (5.1).
 
 ### 6.3 Prompt log
 
@@ -790,7 +837,7 @@ documentos (os mesmos links aparecem nos badges do README):
 
 | Limitação | Observação |
 | :--- | :--- |
-| A janela é sempre 5 | O servidor define a janela no `HSACK` e o cliente valida a faixa 1–5, mas o servidor sempre usa `JANELA_INICIAL = 5` e a janela não muda durante a sessão. |
+| Regra da janela é simples | A janela muda de 1 em 1 (−1 por descarte, +1 por aceite). Não há controle de congestionamento mais elaborado (ex.: reduzir pela metade como no TCP). O cliente só lê a janela dos ACK/NACK que aceita; os ACKs repetidos que ele descarta também levam a janela, mas o valor mais recente chega no ACK seguinte. |
 | O NACK do SR é da `base` | O servidor não confia no seq do pacote corrompido e manda NACK da base. Se o corrompido for outro pacote, o cliente reenvia a base (inofensivo, vira duplicado) e o pacote corrompido volta pelo timer dele. |
 | Corrupção no campo `tipo` não gera NACK | O servidor descarta como tipo desconhecido; a recuperação é pelo timer (2.12). Uma melhoria possível: tratar "tipo desconhecido + checksum inválido + cliente com sessão" como dado corrompido e mandar NACK. |
 | NACKs repetidos geram reenvios duplicados | Escolha do grupo em troca de código mais simples (6.2, caso 15). O NACK não conta como tentativa; com um canal que corrompesse *sempre* (ex.: `PROB_CORRUPCAO = 1.0`), o cliente reenviaria indefinidamente. O simulador determinístico só corrompe na 1ª tentativa. |
@@ -799,6 +846,9 @@ documentos (os mesmos links aparecem nos badges do README):
 | RC4 com chave fixa | A chave está no `config.py` dos dois lados e se repete em toda mensagem (sem nonce); RC4 não é seguro para uso real. |
 | Versão do protocolo | A versão é a `1` (`VERSAO_PROTOCOLO` no `config.py`), mas ela não vai no cabeçalho dos pacotes. |
 | `testes.py` desatualizado | Removido no commit `dee5181`; os cenários do CP3 estão na seção 5.1. |
+
+No Checkpoint 3 a janela também passou a variar de 1 a 5 durante a comunicação,
+determinada pelo servidor (2.4).
 
 Resolvidos no Checkpoint 3 (estavam nesta tabela no CP2): a inserção determinística de
 erros e perdas pelo cliente (2.14); o NACK de dados (2.12); o checksum passou a cobrir

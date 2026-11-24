@@ -1,2 +1,5 @@
 __pycache__/
 *.pyc
+testes_cp3.bat
+log_cliente.txt
+log_servidor.txt

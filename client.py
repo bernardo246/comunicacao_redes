@@ -251,6 +251,7 @@ def enviar_gbn(sock, mensagem, janela):
             continue
 
         pacote = parsear_pacote(resposta)
+        janela = janela_do_servidor(pacote, janela) # o servidor pode ter mudado a janela
 
         if pacote["tipo"] == TYPE_NACK:
             # o NACK traz o seq que o servidor esta esperando, entao tudo antes dele ja chegou.
@@ -299,6 +300,7 @@ def enviar_sr(sock, mensagem, janela):
         if resposta is not None:
             pacote = parsear_pacote(resposta)
             seq = pacote["seq"]
+            janela = janela_do_servidor(pacote, janela) # o servidor pode ter mudado a janela
 
             if pacote["tipo"] == TYPE_NACK:
                 # chegou estragado: reenvia so esse pacote imediatamente e reinicia o timer dele
@@ -321,6 +323,20 @@ def enviar_sr(sock, mensagem, janela):
                 print(f"Tentativa {tentativas[seq]}: sem ACK do seq={seq}, reenviando so ele...")
                 enviar(sock, pacotes[seq])
                 hora_envio[seq] = agora
+
+
+# O servidor manda a janela atual no payload de cada ACK/NACK (ex.: MSGACK|3|cs|4).
+# Se veio um valor valido e diferente, o cliente passa a usar a janela nova.
+def janela_do_servidor(pacote, janela_atual):
+    try:
+        nova = int(pacote["payload"])
+    except ValueError: # payload vazio ou estranho: mantem a janela que ja tinha
+        return janela_atual
+    if not JANELA_MIN <= nova <= JANELA_MAX:
+        return janela_atual
+    if nova != janela_atual:
+        print(f"Janela: {janela_atual} -> {nova} (definida pelo servidor)")
+    return nova
 
 
 # Soma mais uma tentativa ao pacote. Se chegou no limite do config.py, o cliente desiste.

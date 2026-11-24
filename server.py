@@ -89,7 +89,7 @@ def validar_parametros(dados):
         "modo_retransmissao": dados["modo_retransmissao"],
         "tipo_envio": dados["tipo_envio"],
         "tamanho_max_texto": tamanho,
-        "tamanho_janela": config.JANELA_INICIAL,
+        "tamanho_janela": config.JANELA,
     }
     return aceitos, None
 
@@ -116,7 +116,20 @@ def criar_sessao(parametros):
         "recebidos": [], # os payloads já entregues em ordem
         "seq_final": None,  # o seq do MSGFIM, preenchido quando ele cheg
         "concluida": False, # vira True quando a mensagem foi montada e impressa
+        "janela": parametros["tamanho_janela"], # janela atual: comeca com a do HSACK e muda com os erros/acertos
     }
+
+# Janela variavel: descartou um pacote (corrompido ou fora de ordem) -> diminui 1;
+# aceitou um pacote -> aumenta 1. Sempre entre JANELA_MIN e JANELA_MAX.
+# A janela nova vai no proximo ACK/NACK, e o cliente passa a usar ela.
+def ajustar_janela(sessao, aceitou):
+    antes = sessao["janela"]
+    if aceitou:
+        sessao["janela"] = min(antes + 1, config.JANELA_MAX)
+    else:
+        sessao["janela"] = max(antes - 1, config.JANELA_MIN)
+    if sessao["janela"] != antes:
+        print(f"[servidor] janela: {antes} -> {sessao['janela']}")
 
 # antes ficava na main
 def tratar_handshake(servidor, endereco_cliente, info, sessoes):
@@ -142,16 +155,16 @@ def tratar_handshake(servidor, endereco_cliente, info, sessoes):
     # Cria uma nova sessao e guarda no dicionarioS
     sessoes[endereco_cliente] = criar_sessao(parametros)
 
-# recebe o socket,destino e seq
-def enviar_ack(servidor, endereco_cliente, seq):
-    ack = protocol.montar_ack(seq)                 # protocol monta a ack
+# recebe o socket, destino, seq e a janela atual (vai no payload do ACK)
+def enviar_ack(servidor, endereco_cliente, seq, janela):
+    ack = protocol.montar_ack(seq, janela)         # protocol monta a ack
     enviar_pacote(servidor, endereco_cliente, ack) # passa pelo canal simulado antes de sair
 
-# avisa o cliente que um pacote chegou corrompido 
+# avisa o cliente que um pacote chegou corrompido
 # O seq do pacote corrompido nao e confiavel
 # entao quem chama passa um seq que vem do estado do proprio servidor.
-def enviar_nack(servidor, endereco_cliente, seq):
-    nack = protocol.montar_pacote_com_checksum(TYPE_NACK, seq, "")
+def enviar_nack(servidor, endereco_cliente, seq, janela):
+    nack = protocol.montar_nack(seq, janela)
     enviar_pacote(servidor, endereco_cliente, nack)
 
 #lado receptor do Go-Back-N. 
@@ -166,18 +179,21 @@ def receber_gbn(servidor, endereco_cliente, sessao, info):
         sessao["recebidos"].append(info["payload"])  
         if info["ultimo"]:                             # o FIM foi aceito em ordem mensagem termina neste seq
             sessao["seq_final"] = seq
-        enviar_ack(servidor, endereco_cliente, seq)  # confirma esse pacote
-        sessao["seq_esperado"] += 1   # passa a esperar o proximo            
+        ajustar_janela(sessao, aceitou=True)
+        enviar_ack(servidor, endereco_cliente, seq, sessao["janela"])  # confirma esse pacote
+        sessao["seq_esperado"] += 1   # passa a esperar o proximo
         return
 
     # checksum invalido: descarta e manda NACK do seq que o servidor esta esperando
     if not info["checksum_valido"]:
         print(f"[servidor] GBN: seq={seq} descartado, checksum invalido")
-        enviar_nack(servidor, endereco_cliente, sessao["seq_esperado"])
+        ajustar_janela(sessao, aceitou=False)
+        enviar_nack(servidor, endereco_cliente, sessao["seq_esperado"], sessao["janela"])
         return
 
     # chegou aqui: checksum certo, mas fora de ordem
     print(f"[servidor] GBN: seq={seq} descartado, fora de ordem (esperado {sessao['seq_esperado']})")
+    ajustar_janela(sessao, aceitou=False)
 
  
     # “Essa linha só roda quando o pacote é descartado, 
@@ -185,13 +201,16 @@ def receber_gbn(servidor, endereco_cliente, sessao, info):
     # avisando o cliente até onde está tudo certo. 
     # Se nada foi aceito ainda, não há o que repetir, e o timeout do cliente cuida do reenvio.”
     if sessao["seq_esperado"] > 0:
-        enviar_ack(servidor, endereco_cliente, sessao["seq_esperado"] - 1)
+        enviar_ack(servidor, endereco_cliente, sessao["seq_esperado"] - 1, sessao["janela"])
 
 def receber_sr(servidor, endereco_cliente, sessao, info):
     # guarda os valores em variaveis
-    seq = info["seq"] 
-    base = sessao["base"] # o primeiro seq que ainda não foi entregue, o início da janela                         
-    janela = sessao["parametros"]["tamanho_janela"]  # é o tamanho combinado no HSACK    
+    seq = info["seq"]
+    base = sessao["base"] # o primeiro seq que ainda não foi entregue, o início da janela
+    # para ACEITAR pacotes o servidor usa sempre o maximo (o tamanho do buffer). A janela variavel
+    # (sessao["janela"]) e a que ele ANUNCIA ao cliente: se encolhesse a de recepcao, pacotes
+    # que o cliente ja mandou com a janela antiga seriam descartados a toa.
+    janela = config.JANELA_MAX
 
     # checksum corrompido, só descarta sem mandar ack
     # . No SR cada pacote tem o próprio timer no cliente, 
@@ -199,19 +218,21 @@ def receber_sr(servidor, endereco_cliente, sessao, info):
     # o timer dele estoura e o cliente reenvia só ele.
     if not info["checksum_valido"]:
         print(f"[servidor] SR: seq={seq} descartado, checksum invalido")
-        enviar_nack(servidor, endereco_cliente, base) # base = primeiro seq ainda nao entregue
+        ajustar_janela(sessao, aceitou=False)
+        enviar_nack(servidor, endereco_cliente, base, sessao["janela"]) # base = primeiro seq ainda nao entregue
         return
 
     # verifica se está na dentro da janela
-    # Ele manda um ACK individual 
+    # Ele manda um ACK individual
     # e guarda o pacote num buffer indexado pelo seq
     if base <= seq < base + janela:
-        enviar_ack(servidor, endereco_cliente, seq)       
         # Buffer é um dicionario aceita guardar fora da ordem (so se ele perguntar)
-        if seq not in sessao["buffer"]:   # guarda no buffer 
+        if seq not in sessao["buffer"]:   # guarda no buffer
             sessao["buffer"][seq] = info["payload"]
             if info["ultimo"]:   #  guarda o seq_final
                 sessao["seq_final"] = seq
+            ajustar_janela(sessao, aceitou=True) # so conta pacote novo, nao duplicado
+        enviar_ack(servidor, endereco_cliente, seq, sessao["janela"])
 
         #deslizamento da janela, 
         # perguntando se o pacote do inicio ja chegou 
@@ -234,7 +255,7 @@ def receber_sr(servidor, endereco_cliente, sessao, info):
     # Se o seq está na janela anterior,não guardo de novo, só reenvio o ACK
     if base - janela <= seq < base:
         print(f"[servidor] SR: seq={seq} duplicado (ja entregue), reenviando ACK")
-        enviar_ack(servidor, endereco_cliente, seq)
+        enviar_ack(servidor, endereco_cliente, seq, sessao["janela"])
         return
 
     print(f"[servidor] SR: seq={seq} fora da janela [{base}, {base + janela - 1}], descartado")

@@ -51,7 +51,8 @@
   com checksum errado é descartado.
 
 - payload — O conteúdo/dado útil (parâmetros da sessão no handshake, até 4 caracteres da
-  mensagem **cifrada** no `MSG`, vazio no `MSGFIM`, no `MSGACK` e no `MSGNACK`).
+  mensagem **cifrada** no `MSG`, vazio no `MSGFIM`, e a janela atual do servidor no `MSGACK`
+  e no `MSGNACK`, ex.: `MSGACK|3|789|4`).
 
 
 # Checagem de integridade (checksum)
@@ -97,7 +98,7 @@ Exemplo, para o pacote `MSG|0|887|ola,`: o checksum é a soma dos códigos da st
 
 **Limitações:**
 
-- Pacotes sem payload (`MSGFIM`, `MSGACK`) também têm checksum diferente de `0`, porque
+- Pacotes sem payload (como o `MSGFIM`) também têm checksum diferente de `0`, porque
   `tipo` e `seq` entram na soma (`MSGFIM|3|750|`).
 - A soma não detecta erros que preservam o total, como a troca de ordem dos caracteres
   (`"ab"` e `"ba"` somam igual). O algoritmo é escolhido por `ALGORITMO_CHECKSUM_PADRAO` no
@@ -309,7 +310,11 @@ O roteiro completo de demonstração está no [RELATORIO.md](RELATORIO.md), seç
   Mínimo: `30` (`MIN_TEXTO`) | Default: `30` (`MAX_TEXTO_DEFAULT`) — proposto pelo cliente, validado pelo servidor.
 
 - **tamanho_janela** — Nº de pacotes em voo simultaneamente (sem confirmação).
-  Faixa: `1` a `5` | Inicial: `5` — definido **só pelo servidor**, aparece apenas no `HSACK`.
+  Faixa: `1` a `5` | Inicial: `5` (constante `JANELA` no `config.py`) — definido **só pelo
+  servidor**. O valor inicial vai no `HSACK`; depois a janela **varia** durante a
+  comunicação: o servidor diminui 1 a cada pacote que descarta (corrompido ou fora de ordem)
+  e aumenta 1 a cada pacote que aceita, e manda o valor atual no payload de cada
+  `MSGACK`/`MSGNACK`. O cliente passa a usar a janela que veio no último ACK/NACK aceito.
 
 ---
 

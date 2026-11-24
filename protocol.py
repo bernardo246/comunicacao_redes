@@ -190,8 +190,12 @@ def parsear_pacote_data(pacote_bruto):
     pacote["ultimo"] = (pacote["tipo"] == TYPE_FIM)  # sinal de fim de mensagem para o server/client
     return pacote
 
-def montar_ack(seq):
-    return montar_pacote_com_checksum(TYPE_DATA_ACK, seq, "")
+# ACK e NACK levam no payload a janela atual do servidor (ex.: MSGACK|3|cs|4 = "recebi o 3, janela agora 4")
+def montar_ack(seq, janela):
+    return montar_pacote_com_checksum(TYPE_DATA_ACK, seq, str(janela))
+
+def montar_nack(seq, janela):
+    return montar_pacote_com_checksum(TYPE_NACK, seq, str(janela))
 
 def parsear_ack(packege):
     return parsear_pacote(packege)

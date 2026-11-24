@@ -37,7 +37,9 @@ MAX_TEXTO_DEFAULT = 30    # valor default proposto pelo cliente
 # quantidade de pacotes que foram enviados por lote
 JANELA_MIN = 1
 JANELA_MAX = 5
-JANELA_INICIAL = 5        # valor inicial determinado pelo servidor
+JANELA = 5                # janela inicial que o servidor manda no HSACK (de JANELA_MIN a JANELA_MAX; o enunciado pede 5).
+                          # Depois ela varia: -1 a cada pacote descartado, +1 a cada pacote aceito (server.ajustar_janela)
+                          # e o valor atual vai no payload de cada ACK/NACK.
 
 # ---------------------------------------------------------------- retransmissao (cliente)
 # Quantas vezes o cliente envia o mesmo pacote sem receber resposta antes de desistir.
