@@ -8,14 +8,36 @@
 #
 # 2. Envio: daqui pra frente tudo e decidido pela config_sessao, e nao pelos argumentos digitados:
 #    o tamanho maximo da mensagem, se o envio e GBN ou individual e o tamanho da janela.
+#
+# CP3: todo pacote que o cliente manda (HS e dados) passa pelo canal simulado (protocol.simular_canal),
+# que pode perder ou corromper o pacote. Quais pacotes falham e escolhido na linha de comando
+# (--perder / --corromper); sem essas opcoes o canal e limpo.
 
 import argparse
 import socket
 import sys
 import time
+import config  # o simular_canal le config.SEQS_PERDIDOS / SEQS_CORROMPIDOS em tempo de execucao
 from config import *
 from protocol import montar_handshake_request, parsear_handshake, parsear_pacote, calcular_checksum_pacote
-from protocol import montar_pacotes_mensagem
+from protocol import montar_pacotes_mensagem, cifrar_mensagem, simular_canal
+
+
+# Todo pacote do cliente sai por aqui, passando antes pelo canal simulado.
+# O canal pode devolver o pacote normal, estragado ou None (perdido).
+def enviar(sock, pacote):
+    resultado = simular_canal(pacote)
+
+    # perdido: simplesmente nao envia. O cliente vai perceber pelo timer, como na rede de verdade
+    if resultado is None:
+        print(f"[SIMULACAO] PERDIDO, nao enviado: {pacote!r}")
+        return
+
+    if resultado != pacote:
+        print(f"[SIMULACAO] CORROMPIDO: {pacote!r} -> {resultado!r}")
+
+    sock.sendto(resultado.encode(ENCODING), (HOST, PORTA))
+    print("Pacote enviado:", repr(resultado))
 
 """
 OBS: so tem que deixar essa função ser mais maleavel, sendo possivel escolher gbn ou sr, lote ou individual
@@ -29,9 +51,9 @@ def enviar_handshake(modo_retransmissao=MODO_PADRAO, tipo_envio=ENVIO_PADRAO, ta
 
     tentativas = 0 # isso diz quantas vezes o cliente tentou enviar o handshake e não recebeu resposta do servidor
     while tentativas < MAX_TENTATIVAS_ENVIO: # limite vem do config.py, pra ele nao ficar tentando infinitamente
-        sock.sendto(handshake.encode(ENCODING), (HOST, PORTA)) # envia o handshake para o servidor
+        enviar(sock, handshake) # envia o handshake para o servidor (passa pelo canal simulado: --perder 0 / --corromper 0 afetam o HS)
         tentativas += 1
-        resposta = receber_resposta(sock, TYPE_HANDSHAKE_ACK, [0]) # so aceita um HSACK valido vindo do servidor
+        resposta = receber_resposta(sock, [TYPE_HANDSHAKE_ACK], [0]) # so aceita um HSACK valido vindo do servidor
         if resposta is not None:
             break
         print(f"Tentativa {tentativas}: sem resposta valida do servidor, tentando de novo...")
@@ -66,6 +88,16 @@ def validar_hsack(config_sessao, modo_retransmissao, tipo_envio):
         return f"janela {config_sessao['tamanho_janela']} fora da faixa {JANELA_MIN} a {JANELA_MAX}"
     return None
 
+# Converte os argumentos que chegam em uma lista pra informar o canal simulado quais pacotes devem ser perdidos ou corrompidos. Ex.: "1,3" vira [1, 3]. São os que vem do --perder e --corromper. Se vierem caracteres que não são números, ou números negativos, dispara um erro de argumento.
+def lista_de_seqs(texto):
+    try:
+        seqs = [int(parte) for parte in texto.split(",") if parte.strip() != ""]
+    except ValueError:
+        raise argparse.ArgumentTypeError(f"use numeros separados por virgula, ex.: 1,3 (recebido {texto!r})")
+    if any(seq < 0 for seq in seqs):
+        raise argparse.ArgumentTypeError("seq nao pode ser negativo")
+    return seqs
+
 
 # Pega os argumentos que chegarem da linha de comando e retorna um objeto com os valores. Se algum argumento não for passado, usa o valor default.
 def ler_argumentos():
@@ -79,6 +111,13 @@ def ler_argumentos():
                         help=f"tipo de envio (default: {ENVIO_PADRAO})")
     parser.add_argument("--texto", type=int, default=MAX_TEXTO_DEFAULT,
                         help=f"tamanho maximo do texto, minimo {MIN_TEXTO} (default: {MAX_TEXTO_DEFAULT})")
+    # simulacao de falhas (CP3): erro deterministico, definido no cliente e verificado pelo servidor.
+    # Cada seq listado falha so na 1a tentativa; a retransmissao passa. O seq 0 vale tambem para o HS.
+    parser.add_argument("--perder", type=lista_de_seqs, default=[], metavar="SEQS",
+                        help="seqs que se perdem na 1a tentativa, separados por virgula (ex.: 1,3)")
+    parser.add_argument("--corromper", type=lista_de_seqs, default=[], metavar="SEQS",
+                        help="seqs que chegam corrompidos na 1a tentativa, separados por virgula (ex.: 2)")
+    
     args = parser.parse_args()
 
     if args.texto < MIN_TEXTO:
@@ -97,168 +136,199 @@ def ler_argumentos():
     return args
 
 
-# espera um pacote do tipo esperado com o seq dentro de seqs_esperados (ex.: [0] ou range(2, 5)).
-# espera: quantos segundos esperar (por padrao TIMEOUT_ENVIO).
-# Retorna o pacote (string) ou None se o prazo acabar.
-# Qualquer outra coisa que chegar no meio do caminho e descartada, sem derrubar o cliente.
-def receber_resposta(sock, tipo_esperado, seqs_esperados, espera=TIMEOUT_ENVIO):
-    servidor = (socket.gethostbyname(HOST), PORTA) # recvfrom devolve o IP, entao compara com o IP do HOST
-    prazo = time.monotonic() + espera # prazo fixo: pacotes errados chegando nao renovam o tempo de espera
+# Retorno:
+#   a string do pacote, se chegar uma resposta valida e esperada dentro do prazo;
+#   None, se o prazo acabar (quem chamou trata como "sem resposta" e reenvia).
+def receber_resposta(sock, tipos_esperados, seqs_esperados, espera=TIMEOUT_ENVIO):
+   
+    servidor = (socket.gethostbyname(HOST), PORTA)
+    prazo = time.monotonic() + espera # monotonic: relogio que so anda pra frente (nao muda se o relogio do PC for ajustado)
 
-    while True:
+    while True: # cada volta trata UM datagrama que chegou (ou o fim do prazo)
+        
         restante = prazo - time.monotonic()
         if restante <= 0:
             return None
-        sock.settimeout(restante)
-        # recebendo os dados
+        sock.settimeout(restante) # o recvfrom so pode bloquear pelo tempo que sobrou
+
+
+
         try:
-            dados, endereco = sock.recvfrom(TAM_RECV)
-        except (socket.timeout, ConnectionResetError): # no Windows, servidor fora do ar vira ConnectionResetError em vez de timeout
+            dados, endereco = sock.recvfrom(TAM_RECV) # bloqueia ate chegar um datagrama ou o tempo acabar
+        except (socket.timeout, ConnectionResetError):
             return None
-        except OSError as erro: # ex.: datagrama maior que TAM_RECV (WinError 10040 no Windows)
+        except OSError as erro:
             print(f"Descartado: datagrama invalido ({erro})")
             continue
+
 
         if endereco != servidor:
             print(f"Descartado: pacote de {endereco}, que nao e o servidor")
             continue
 
+
+        # Falha se os bytes nao forem UTF-8 valido
         try:
             bruto = dados.decode(ENCODING)
-            pacote = parsear_pacote(bruto)
-        except (UnicodeDecodeError, ValueError) as erro: # bytes que nao sao texto ou pacote fora do formato tipo|seq|checksum|payload
+            pacote = parsear_pacote(bruto) # {"tipo", "seq", "checksum", "payload"}
+        except (UnicodeDecodeError, ValueError) as erro:
             print(f"Descartado: pacote malformado ({erro})")
             continue
 
-        if calcular_checksum_pacote(pacote) != pacote["checksum"]:
-            print("Descartado: checksum invalido:", bruto)
+
+        # ve se o pacote é valido calculando o checksum  
+        valido = calcular_checksum_pacote(pacote) == pacote["checksum"]
+        print(f"Recebido do servidor: tipo={pacote['tipo']} | seq={pacote['seq']} | "
+              f"checksum={pacote['checksum']} | valido={valido}")
+
+        if not valido:
+            print("Descartado: checksum invalido:", repr(bruto))
             continue
 
-        if pacote["tipo"] != tipo_esperado or pacote["seq"] not in seqs_esperados:
-            print("Descartado: nao e o esperado:", bruto) # ex.: ACK repetido de um pacote anterior
+        
+        # descarta pacotes dos tipos que nao estao predefinidos
+        if pacote["tipo"] not in tipos_esperados or pacote["seq"] not in seqs_esperados:
+            print("Descartado: nao e o esperado:", bruto)
             continue
 
+        # passou em todos os filtros: e a resposta que o chamador quer. Ele decide o que fazer
+        # olhando o tipo (ACK -> anda / NACK -> reenvia imediatamente).
         return bruto
 
 
+# Envio individual (pare e espere): manda um pacote e so passa para o proximo depois do ACK dele.
 def enviar_individual(sock, mensagem):
-    pacotes = montar_pacotes_mensagem(mensagem) # pedacos de 4 caracteres e o MSGFIM no final
+    pacotes = montar_pacotes_mensagem(mensagem) # pedacos de 4 caracteres + MSGFIM no final
     print("Pacotes da mensagem:", pacotes)
 
-    indice = 0 # posicao do pacote atual na lista, e tambem o seq dele
-    tentativas = 0
-    while indice < len(pacotes): # so passa para o proximo pacote quando o atual for confirmado
-        pacote = pacotes[indice]
-        sock.sendto(pacote.encode(ENCODING), (HOST, PORTA)) # mesmo socket do handshake, para o servidor achar a sessao
-        print("Pacote enviado:", pacote)
+    seq = 0         # pacote da vez (a posicao na lista e o proprio seq)
+    tentativas = 0  # quantas vezes o timer do pacote da vez estourou
 
-        if receber_resposta(sock, TYPE_DATA_ACK, [indice]) is not None:
-            print(f"ACK do seq={indice} recebido")
-            indice += 1
-            tentativas = 0 # zera para o proximo pacote
+    while seq < len(pacotes):
+        enviar(sock, pacotes[seq])
+        resposta = receber_resposta(sock, [TYPE_DATA_ACK, TYPE_NACK], [seq])
+
+        if resposta is None:
+            # timer estourou: o pacote ou o ACK se perdeu. O laco reenvia o mesmo pacote
+            tentativas = contar_tentativa(sock, tentativas, seq)
+            print(f"Tentativa {tentativas}: sem ACK do seq={seq}, reenviando...")
+
+        elif parsear_pacote(resposta)["tipo"] == TYPE_NACK:
+            # chegou estragado no servidor: o laco reenvia o mesmo pacote, sem esperar o timer
+            print(f"NACK do seq={seq}, reenviando imediatamente...")
+
         else:
-            tentativas += 1
-            if tentativas == MAX_TENTATIVAS_ENVIO:
-                encerrar_com_erro(sock, f"o seq={indice} nao foi confirmado depois de {MAX_TENTATIVAS_ENVIO} tentativas.")
-            print(f"Tentativa {tentativas}: sem ACK do seq={indice}, reenviando...")
+            # ACK: esse pacote chegou certo, vamos para o proximo
+            print(f"ACK do seq={seq} recebido")
+            seq += 1
+            tentativas = 0
 
 
-# Go-Back-N: manda varios pacotes de uma vez, ate o tamanho da janela.
-# O ACK e cumulativo: o ACK do seq n confirma todos os pacotes ate n.
-# Se o tempo acabar sem ACK, volta para o primeiro pacote sem confirmacao e reenvia a partir dele.
+# Go-Back-N: manda ate "janela" pacotes de uma vez, sem esperar ACK de cada um.
+# O ACK e cumulativo (ACK 4 = "recebi tudo ate o 4") e existe um timer so.
+# Se der problema, volta para o primeiro pacote sem ACK e reenvia tudo a partir dele.
 def enviar_gbn(sock, mensagem, janela):
-    pacotes = montar_pacotes_mensagem(mensagem) # pedacos de 4 caracteres e o MSGFIM no final
+    pacotes = montar_pacotes_mensagem(mensagem) # pedacos de 4 caracteres + MSGFIM no final
     print("Pacotes da mensagem:", pacotes)
 
-    base = 0      # primeiro pacote que ainda nao foi confirmado
-    proximo = 0   # proximo pacote que ainda nao foi enviado
-    tentativas = 0
+    base = 0        # primeiro pacote que ainda nao teve ACK (inicio da janela)
+    proximo = 0     # proximo pacote que ainda nao foi enviado
+    tentativas = 0  # quantas vezes o timer estourou sem a base andar
 
     while base < len(pacotes):
-        # manda todos os pacotes que cabem na janela
+        # enche a janela: manda tudo que cabe entre a base e base + janela
         while proximo < len(pacotes) and proximo < base + janela:
-            sock.sendto(pacotes[proximo].encode(ENCODING), (HOST, PORTA))
-            print("Pacote enviado:", pacotes[proximo])
+            enviar(sock, pacotes[proximo])
             proximo += 1
 
-        # aceita o ACK de qualquer pacote que ja foi enviado e ainda nao foi confirmado
-        resposta = receber_resposta(sock, TYPE_DATA_ACK, range(base, proximo))
+        resposta = receber_resposta(sock, [TYPE_DATA_ACK, TYPE_NACK], range(base, proximo))
 
-        if resposta is not None:
-            seq_confirmado = parsear_pacote(resposta)["seq"]
-            print(f"ACK do seq={seq_confirmado} recebido")
-            base = seq_confirmado + 1 # tudo ate esse seq foi confirmado, entao a janela anda
-            tentativas = 0
-        else:
-            tentativas += 1
-            if tentativas == MAX_TENTATIVAS_ENVIO:
-                encerrar_com_erro(sock, f"o seq={base} nao foi confirmado depois de {MAX_TENTATIVAS_ENVIO} tentativas.")
+        if resposta is None:
+            # timer estourou: volta para a base, e o laco de cima reenvia a janela inteira
+            tentativas = contar_tentativa(sock, tentativas, base)
             print(f"Tentativa {tentativas}: sem ACK do seq={base}, reenviando a partir dele...")
-            proximo = base # volta para a base, e o laco de cima reenvia a janela
+            proximo = base
+            continue
+
+        pacote = parsear_pacote(resposta)
+
+        if pacote["tipo"] == TYPE_NACK:
+            # o NACK traz o seq que o servidor esta esperando, entao tudo antes dele ja chegou.
+            # Volta para esse seq e reenvia a partir dele imediatamente, sem esperar o timer
+            print(f"NACK do seq={pacote['seq']}, reenviando a partir dele imediatamente...")
+            base = pacote["seq"]
+            proximo = base
+
+        else:
+            # ACK cumulativo: tudo ate esse seq foi confirmado, entao a janela anda
+            print(f"ACK do seq={pacote['seq']} recebido")
+            base = pacote["seq"] + 1
+            tentativas = 0
 
 
-# Repeticao Seletiva: manda varios pacotes de uma vez, ate o tamanho da janela, igual ao GBN.
-# A diferenca: o ACK e individual (o ACK do seq n confirma so o n) e cada pacote tem o seu proprio timer.
-# Se o tempo de um pacote acabar sem ACK, reenvia so ele.
-# a janela so anda quando o primeiro chegar
+# Repeticao Seletiva: tambem manda ate "janela" pacotes de uma vez, mas:
+# - o ACK e individual (ACK 4 = "recebi o 4", so ele);
+# - cada pacote tem o seu proprio timer;
+# - se der problema, reenvia so o pacote que falhou.
 def enviar_sr(sock, mensagem, janela):
-    pacotes = montar_pacotes_mensagem(mensagem) # pedacos de 4 caracteres e o MSGFIM no final
+    pacotes = montar_pacotes_mensagem(mensagem) # pedacos de 4 caracteres + MSGFIM no final
     print("Pacotes da mensagem:", pacotes)
 
-    base = 0         # primeiro pacote que ainda nao foi confirmado
-    proximo = 0      # proximo pacote que ainda nao foi enviado
-    confirmados = [] # seqs que ja receberam ACK, mesmo fora de ordem
-    hora_envio = {}  # seq -> hora do ultimo envio daquele pacote (e o timer dele) [Dicionario]
-    tentativas = {}  # seq -> quantas vezes o tempo daquele pacote acabou
+    base = 0             # primeiro pacote que ainda nao teve ACK (inicio da janela)
+    proximo = 0          # proximo pacote que ainda nao foi enviado
+    confirmados = set()  # pacotes que ja tiveram ACK (podem chegar fora de ordem)
+    hora_envio = {}      # seq -> quando foi enviado pela ultima vez (e o timer de cada pacote)
+    tentativas = {}      # seq -> quantas vezes o timer daquele pacote estourou
 
     while base < len(pacotes):
-        # manda todos os pacotes que cabem na janela
+        # enche a janela e liga o timer de cada pacote enviado
         while proximo < len(pacotes) and proximo < base + janela:
-            sock.sendto(pacotes[proximo].encode(ENCODING), (HOST, PORTA))
-            print("Pacote enviado:", pacotes[proximo])
+            enviar(sock, pacotes[proximo])
             hora_envio[proximo] = time.monotonic()
             tentativas[proximo] = 0
             proximo += 1
 
-        # pacotes que ja foram enviados e ainda esperam ACK
-        pendentes = []
-        for seq in range(base, proximo):
-            if seq not in confirmados: # isso tem que ser feito porque o ACK pode chegar fora de ordem, e a janela anda so quando o primeiro pacote dela for confirmado
-                pendentes.append(seq)
+        # pendentes: ja enviados e ainda sem ACK.
+        # Espera so ate o timer mais antigo entre eles estourar
+        pendentes = [seq for seq in range(base, proximo) if seq not in confirmados]
+        mais_antigo = min(hora_envio[seq] for seq in pendentes)
+        espera = mais_antigo + TIMEOUT_ENVIO - time.monotonic()
 
-        # espera so ate o timer do pacote mais antigo acabar
-        mais_antigo = pendentes[0]
-        for seq in pendentes:
-            if hora_envio[seq] < hora_envio[mais_antigo]:
-                mais_antigo = seq
-        espera = hora_envio[mais_antigo] + TIMEOUT_ENVIO - time.monotonic()
-
-        resposta = receber_resposta(sock, TYPE_DATA_ACK, pendentes, espera) # so aceita ACK de pacotes que ja foram enviados e ainda nao foram confirmados
+        resposta = receber_resposta(sock, [TYPE_DATA_ACK, TYPE_NACK], pendentes, espera)
 
         if resposta is not None:
-            seq_confirmado = parsear_pacote(resposta)["seq"] 
-            print(f"ACK do seq={seq_confirmado} recebido")
-            confirmados.append(seq_confirmado)
+            pacote = parsear_pacote(resposta)
+            seq = pacote["seq"]
 
-            # a janela so anda quando o primeiro pacote dela for confirmado
-            while base in confirmados:
-                base += 1
+            if pacote["tipo"] == TYPE_NACK:
+                # chegou estragado: reenvia so esse pacote imediatamente e reinicia o timer dele
+                print(f"NACK do seq={seq}, reenviando so ele imediatamente...")
+                enviar(sock, pacotes[seq])
+                hora_envio[seq] = time.monotonic()
 
-        # reenvia so os pacotes cujo tempo acabou
+            else:
+                # ACK: marca so esse pacote. A janela anda enquanto o primeiro dela estiver confirmado
+                print(f"ACK do seq={seq} recebido")
+                confirmados.add(seq)
+                while base in confirmados:
+                    base += 1
+
+        # confere os timers: reenvia so os pacotes cujo tempo acabou
         agora = time.monotonic()
         for seq in range(base, proximo):
-            if seq in confirmados:
-                continue
-            if agora - hora_envio[seq] < TIMEOUT_ENVIO:
-                continue
+            if seq not in confirmados and agora - hora_envio[seq] >= TIMEOUT_ENVIO:
+                tentativas[seq] = contar_tentativa(sock, tentativas[seq], seq)
+                print(f"Tentativa {tentativas[seq]}: sem ACK do seq={seq}, reenviando so ele...")
+                enviar(sock, pacotes[seq])
+                hora_envio[seq] = agora
 
-            tentativas[seq] += 1
-            if tentativas[seq] == MAX_TENTATIVAS_ENVIO:
-                encerrar_com_erro(sock, f"o seq={seq} nao foi confirmado depois de {MAX_TENTATIVAS_ENVIO} tentativas.")
-            print(f"Tentativa {tentativas[seq]}: sem ACK do seq={seq}, reenviando so ele...")
-            sock.sendto(pacotes[seq].encode(ENCODING), (HOST, PORTA))
-            print("Pacote enviado:", pacotes[seq])
-            hora_envio[seq] = agora # o timer recomeca so para este pacote
+
+# Soma mais uma tentativa ao pacote. Se chegou no limite do config.py, o cliente desiste.
+def contar_tentativa(sock, tentativas, seq):
+    tentativas += 1
+    if tentativas == MAX_TENTATIVAS_ENVIO:
+        encerrar_com_erro(sock, f"o seq={seq} nao foi confirmado depois de {MAX_TENTATIVAS_ENVIO} tentativas.")
+    return tentativas
 
 
 def encerrar_com_erro(sock, motivo):
@@ -269,6 +339,16 @@ def encerrar_com_erro(sock, motivo):
 
 def main():
     args = ler_argumentos()
+
+    # configura o canal simulado SO deste processo: o servidor importa o config.py separado,
+    # entao continua com os valores do arquivo (canal limpo por padrao)
+    config.SEQS_PERDIDOS = args.perder
+    config.SEQS_CORROMPIDOS = args.corromper
+    if args.perder or args.corromper:
+        print(f"Canal com falhas: perder={args.perder} corromper={args.corromper} (so na 1a tentativa de cada seq)")
+    else:
+        print("Canal limpo (sem --perder / --corromper)")
+
     sock, config_sessao = enviar_handshake(args.modo, args.envio, args.texto)
     print ("Configuração da sessão:", config_sessao)
 
@@ -279,12 +359,19 @@ def main():
         if len(args.mensagem) > config_sessao["tamanho_max_texto"]:
             encerrar_com_erro(sock, f"a mensagem passa do tamanho maximo confirmado pelo servidor ({config_sessao['tamanho_max_texto']}).")
 
+        # cifra a mensagem INTEIRA antes de fragmentar: o RC4 e uma cifra de fluxo, entao o servidor
+        # so decifra depois de remontar tudo em ordem (finalizar_mensagem no server.py).
+        # O limite de tamanho acima vale para o texto original, que e o que o usuario digitou.
+        cifrada = cifrar_mensagem(CHAVE_CRIPTOGRAFIA, args.mensagem)
+        print("Mensagem cifrada (RC4):", repr(cifrada))
+
         if config_sessao["tipo_envio"] == MODO_INDIVIDUAL:
-            enviar_individual(sock, args.mensagem)
+            enviar_individual(sock, cifrada)
         elif config_sessao["modo_retransmissao"] == GBN:
-            enviar_gbn(sock, args.mensagem, config_sessao["tamanho_janela"])
+            enviar_gbn(sock, cifrada, config_sessao["tamanho_janela"])
         else:
-            enviar_sr(sock, args.mensagem, config_sessao["tamanho_janela"])
+            enviar_sr(sock, cifrada, config_sessao["tamanho_janela"])
+        print("Mensagem enviada e confirmada pelo servidor.")
 
 
     sock.close()
