@@ -39,7 +39,9 @@
 
 # variaveis para pacote
 - tipo — O que o pacote é: `HS` e `HSACK` (handshake), `MSG` (pedaço da mensagem),
-  `MSGFIM` (fim da mensagem) e `MSGACK` (confirmação de um pacote de dados).
+  `MSGFIM` (fim da mensagem), `MSGACK` (confirmação de um pacote de dados) e `MSGNACK`
+  (reconhecimento negativo: um pacote de dados chegou corrompido, o cliente reenvia
+  imediatamente).
 
 - seq — Qual número de sequência do pacote (pra ordenar e evitar duplicatas).
   Começa em `0` a cada mensagem.
@@ -49,7 +51,7 @@
   com checksum errado é descartado.
 
 - payload — O conteúdo/dado útil (parâmetros da sessão no handshake, até 4 caracteres da
-  mensagem no `MSG`, vazio no `MSGFIM` e no `MSGACK`).
+  mensagem **cifrada** no `MSG`, vazio no `MSGFIM`, no `MSGACK` e no `MSGNACK`).
 
 
 # Checagem de integridade (checksum)
@@ -162,7 +164,8 @@ Isso funciona com o protocolo porque:
 Os códigos em hexadecimal são os vetores de teste publicados do RC4, úteis para conferir a
 implementação.
 
-**Onde entra no fluxo** (a ligação com `client.py` e `server.py` ainda não está feita):
+**Onde entra no fluxo** (o `client.py` cifra no `main`, antes de escolher o modo de envio; o
+`server.py` decifra em `finalizar_mensagem`):
 
 ```
 cliente:  texto → cifrar_mensagem → fragmentar em pedaços de 4 → MSG... + MSGFIM
@@ -220,8 +223,8 @@ perdido ou corrompido. Com a configuração padrão (tudo zerado) ela não alter
 | :--- | :--- | :--- |
 | `PROB_PERDA` | `0.0` | Chance (de 0 a 1) de cada pacote ser perdido. `0.2` perde cerca de 1 a cada 5. |
 | `PROB_CORRUPCAO` | `0.0` | Chance (de 0 a 1) de cada pacote ter um caractere alterado. |
-| `SEQS_PERDIDOS` | `[]` | Lista de `seq` que são perdidos **na 1ª tentativa**. Ex.: `[1, 3]`. |
-| `SEQS_CORROMPIDOS` | `[]` | Lista de `seq` que são corrompidos **na 1ª tentativa**. |
+| `SEQS_PERDIDOS` | `[]` | Lista de `seq` que são perdidos **na 1ª tentativa**. Ex.: `[1, 3]`. No cliente é substituída pelo `--perder`; no arquivo, vale para o servidor. |
+| `SEQS_CORROMPIDOS` | `[]` | Lista de `seq` que são corrompidos **na 1ª tentativa**. No cliente é substituída pelo `--corromper`; no arquivo, vale para o servidor. |
 
 Os dois jeitos podem ser combinados, e servem para coisas diferentes:
 
@@ -236,20 +239,27 @@ Cada seq listado em `SEQS_PERDIDOS` ou `SEQS_CORROMPIDOS` é afetado **uma vez s
 retransmissão do mesmo pacote passa normalmente, senão o protocolo nunca se recuperaria e
 a demonstração travaria.
 
-A conta é por **tipo e seq**, e não só por seq. Com `SEQS_PERDIDOS = [1]`:
+A conta é por **tipo e seq**, e não só por seq. Cada processo tem a sua lista:
 
-- o primeiro `MSG|1` é perdido (perda de **dado**);
-- o primeiro `MSGACK|1` também é perdido (perda de **ACK**), cada um uma vez;
-- o `seq` 0 vale também para o `HS` e o `HSACK` do handshake.
+- no cliente, `--perder 1` perde o primeiro `MSG|1` (perda de **dado**);
+- no servidor, `SEQS_PERDIDOS = [1]` no `config.py` perde o primeiro `MSGACK|1` (perda de
+  **ACK**);
+- o `seq` 0 vale também para o handshake: `--perder 0` no cliente perde o `HS` (e o
+  `MSG|0`), e `SEQS_PERDIDOS = [0]` no servidor perde o `HSACK` (e o `MSGACK|0`).
 
 ## O que cada falha provoca
 
 | Situação | Como simular | O que o protocolo faz |
 | :--- | :--- | :--- |
-| Dado perdido | `SEQS_PERDIDOS = [1]` (no `MSG`) | O temporizador do remetente estoura e ele retransmite. |
-| ACK perdido | `SEQS_PERDIDOS = [1]` (no `MSGACK`) | O remetente retransmite o dado, e o receptor reconhece o duplicado. |
-| Dado ou ACK corrompido | `SEQS_CORROMPIDOS = [1]` | O checksum não bate, o pacote é descartado e o remetente retransmite. |
-| Falhas em volume | `PROB_PERDA = 0.2`, `PROB_CORRUPCAO = 0.1` | Todos os casos acima acontecem de forma aleatória. |
+| Dado perdido | `--perder 1` no cliente | O temporizador do remetente estoura e ele retransmite. |
+| Dado corrompido | `--corromper 1` no cliente | O checksum não bate, o servidor descarta e manda `MSGNACK`, e o cliente retransmite imediatamente. Se a corrupção cair no campo `tipo`, o servidor descarta sem NACK e quem recupera é o timer. |
+| ACK perdido | `SEQS_PERDIDOS = [1]` no `config.py` (vale para o servidor) | O remetente retransmite o dado, e o receptor reconhece o duplicado. |
+| ACK corrompido | `SEQS_CORROMPIDOS = [1]` no `config.py` (vale para o servidor) | O cliente descarta a resposta e o timer cobre. |
+| Falhas em volume | `PROB_PERDA = 0.2`, `PROB_CORRUPCAO = 0.1` no `config.py` | Todos os casos acima acontecem de forma aleatória, nos dois lados. |
+
+O cliente **sobrescreve** `SEQS_PERDIDOS` e `SEQS_CORROMPIDOS` com o que vier em `--perder`
+e `--corromper` (vazio por padrão). Por isso, editar essas listas no `config.py` só afeta o
+servidor. Já `PROB_PERDA` e `PROB_CORRUPCAO` valem para os dois.
 
 ## Exemplo de uso
 
@@ -261,8 +271,26 @@ if pacote is not None:          # None = o pacote foi perdido, não envia
     sock.sendto(pacote.encode(ENCODING), destino)
 ```
 
-> Essa chamada precisa estar no `client.py` e no `server.py` em cada envio. Enquanto não
-> estiver, as constantes do `config.py` não têm efeito.
+No projeto, essa chamada está na função `enviar` do `client.py` (todo pacote do cliente,
+inclusive o `HS`) e na `enviar_pacote` do `server.py` (todo ACK, NACK e HSACK).
+
+## Simulando falhas pelo cliente (`--perder` / `--corromper`)
+
+O enunciado pede que o erro seja **definido no lado cliente**. Por isso o cliente escolhe os
+pacotes que falham na linha de comando, sem editar o `config.py`:
+
+```
+python client.py "ola servidor tudo bem com voce" --modo GBN --perder 2
+python client.py "ola servidor tudo bem com voce" --modo SR --corromper 1,3
+```
+
+- Os valores são os seqs, separados por vírgula. Sem as opções, o canal é limpo.
+- O `main` do cliente copia esses valores para `config.SEQS_PERDIDOS` e
+  `config.SEQS_CORROMPIDOS` **só no processo do cliente**. O servidor continua com os valores
+  do arquivo (canal limpo).
+- Como o `HS` tem seq `0`, `--perder 0` derruba o `HS` e o `MSG 0`, uma vez cada.
+
+O roteiro completo de demonstração está no [RELATORIO.md](RELATORIO.md), seção 4.
 
 ---
 
@@ -273,7 +301,7 @@ if pacote is not None:          # None = o pacote foi perdido, não envia
   Default: `GBN` + `LOTE` — propostos pelo cliente (`HS`), validados e confirmados pelo servidor (`HSACK`).
 
 - **algoritmo** — Algoritmo de checksum usado nos pacotes da sessão.
-  Valor: `"Ascii"` (soma dos valores ASCII dos caracteres do payload, via `ord()`).
+  Valor: `"Ascii"` (soma dos valores ASCII dos caracteres de `tipo|seq|payload`, via `ord()`).
   **Não é negociado no handshake**: é fixo nos dois lados (`ALGORITMO_CHECKSUM_PADRAO` no
   `config.py`) e por isso não aparece no payload do `HS`/`HSACK`.
 
@@ -286,6 +314,17 @@ if pacote is not None:          # None = o pacote foi perdido, não envia
 ---
 
 ## Como testar
+
+> **Atualização do Checkpoint 3:**
+> - Os testes de erros e perdas do CP3 (`--perder`/`--corromper`) e o resultado de cada um
+>   estão no [RELATORIO.md](RELATORIO.md), seção 5.1.
+> - O `testes.py` foi removido do repositório (commit `dee5181`) e não foi atualizado para o
+>   CP3. As menções a ele abaixo são do CP2; a versão antiga pode ser vista com
+>   `git show dee5181^:testes.py`.
+> - Desde o CP3, a mensagem é **cifrada** antes de ser fragmentada. Por isso os payloads e
+>   checksums dos pacotes de dados mostrados nos exemplos abaixo (do CP2, em texto puro) não
+>   são mais os que aparecem no terminal, e o servidor termina com `MENSAGEM DECIFRADA` em vez
+>   de `MENSAGEM COMPLETA`.
 
 Não precisa instalar nada além do Python 3 — todos os testes abaixo são comandos
 avulsos que rodam direto no terminal e mostram o resultado na hora.
